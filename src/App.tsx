@@ -135,9 +135,39 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const sortedCompleted = [...completed].sort(
-    (a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0)
-  );
+  // Group completed tasks: grouped tasks together, solo tasks standalone
+  // Sort groups by latest completedAt within group
+  const completedGroups = (() => {
+    const groupMap: Record<string, typeof completed> = {};
+    const solo: typeof completed = [];
+    for (const t of completed) {
+      if (t.groupId) {
+        if (!groupMap[t.groupId]) groupMap[t.groupId] = [];
+        groupMap[t.groupId].push(t);
+      } else {
+        solo.push(t);
+      }
+    }
+    // Sort tasks within each group by completedAt
+    for (const gid of Object.keys(groupMap)) {
+      groupMap[gid].sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
+    }
+    // Build entries: { type: 'group', groupId, tasks, latestAt } | { type: 'solo', task, latestAt }
+    type Entry =
+      | { type: "group"; groupId: string; tasks: typeof completed; latestAt: number }
+      | { type: "solo"; task: (typeof completed)[0]; latestAt: number };
+    const entries: Entry[] = [];
+    for (const gid of Object.keys(groupMap)) {
+      const tasks = groupMap[gid];
+      const latestAt = Math.max(...tasks.map((t) => t.completedAt ?? 0));
+      entries.push({ type: "group", groupId: gid, tasks, latestAt });
+    }
+    for (const t of solo) {
+      entries.push({ type: "solo", task: t, latestAt: t.completedAt ?? 0 });
+    }
+    entries.sort((a, b) => b.latestAt - a.latestAt);
+    return entries;
+  })();
 
   if (isSupabaseConfigured && !auth.user && !auth.loading) {
     return <AuthScreen onGoogle={auth.signInWithGoogle} onGithub={auth.signInWithGithub} loading={auth.loading} />;
@@ -203,14 +233,83 @@ function App() {
           <h3>완료 기록</h3>
           <p>총 {completed.length}개 · 오늘 {todayCompleted.length}개</p>
         </div>
-        {sortedCompleted.length === 0 ? (
+        {completedGroups.length === 0 ? (
           <div className="timeline-empty">
             <div className="te-icon">✦</div>
             <p>버블을 터뜨려서 완료하세요</p>
           </div>
         ) : (
           <div className="timeline-list">
-            {sortedCompleted.map((task, i) => {
+            {completedGroups.map((entry, ei) => {
+              if (entry.type === "group") {
+                return (
+                  <div key={entry.groupId} className="timeline-group-block">
+                    <div className="timeline-group-header">
+                      <span className="timeline-group-icon">✦</span>
+                      <span className="timeline-group-label">그룹 · {entry.tasks.length}개</span>
+                      <span className="timeline-group-time">
+                        {new Date(entry.latestAt).toLocaleString("ko-KR", {
+                          month: "short", day: "numeric",
+                        })}
+                      </span>
+                    </div>
+                    {entry.tasks.map((task) => {
+                      const isSelected = selectedCompleted === task.id;
+                      const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
+                      return (
+                        <div key={task.id}>
+                          <div
+                            className={`timeline-item grouped ${isSelected ? "selected" : ""}`}
+                            onClick={() => {
+                              const now = Date.now();
+                              const last = lastCompletedClick.current;
+                              if (last && last.id === task.id && now - last.time < 400 && isOwnTask) {
+                                reactivateTask(task.id);
+                                setSelectedCompleted(null);
+                                lastCompletedClick.current = null;
+                                return;
+                              }
+                              lastCompletedClick.current = { id: task.id, time: now };
+                              setSelectedCompleted(isSelected ? null : task.id);
+                            }}
+                          >
+                            <div className="timeline-line">
+                              <div className="timeline-dot small" />
+                              <div className="timeline-connector" />
+                            </div>
+                            <div className="timeline-content">
+                              <div className="timeline-title">{task.title}</div>
+                              <div className="timeline-time">
+                                {task.completedAt
+                                  ? new Date(task.completedAt).toLocaleString("ko-KR", {
+                                      hour: "2-digit", minute: "2-digit",
+                                    })
+                                  : ""}
+                              </div>
+                            </div>
+                          </div>
+                          {isSelected && (
+                            <div className="timeline-detail">
+                              {task.memo && <p className="td-memo">{task.memo}</p>}
+                              {task.estimatedMinutes && <p className="td-est">예상 {task.estimatedMinutes}분</p>}
+                              {isOwnTask && (
+                                <button
+                                  className="td-reactivate"
+                                  onClick={(e) => { e.stopPropagation(); reactivateTask(task.id); setSelectedCompleted(null); }}
+                                >
+                                  ↩ 다시 활성화
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              // Solo task
+              const task = entry.task;
               const isSelected = selectedCompleted === task.id;
               const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
               return (
@@ -232,17 +331,15 @@ function App() {
                   >
                     <div className="timeline-line">
                       <div className="timeline-dot" />
-                      {i < sortedCompleted.length - 1 && <div className="timeline-connector" />}
+                      {ei < completedGroups.length - 1 && <div className="timeline-connector" />}
                     </div>
                     <div className="timeline-content">
                       <div className="timeline-title">{task.title}</div>
                       <div className="timeline-time">
                         {task.completedAt
                           ? new Date(task.completedAt).toLocaleString("ko-KR", {
-                              month: "short",
-                              day: "numeric",
-                              hour: "2-digit",
-                              minute: "2-digit",
+                              month: "short", day: "numeric",
+                              hour: "2-digit", minute: "2-digit",
                             })
                           : ""}
                       </div>
@@ -255,11 +352,7 @@ function App() {
                       {isOwnTask && (
                         <button
                           className="td-reactivate"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            reactivateTask(task.id);
-                            setSelectedCompleted(null);
-                          }}
+                          onClick={(e) => { e.stopPropagation(); reactivateTask(task.id); setSelectedCompleted(null); }}
                         >
                           ↩ 다시 활성화
                         </button>
@@ -283,6 +376,7 @@ function App() {
           onGroup={groupTasks}
           onUngroup={ungroupTask}
           onCompleteGroup={completeGroup}
+          onEmptyClick={() => setSpotlightOpen(true)}
         />
       </div>
 

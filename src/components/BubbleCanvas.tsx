@@ -43,6 +43,7 @@ interface Props {
   onGroup: (id1: string, id2: string) => void;
   onUngroup: (id: string) => void;
   onCompleteGroup: (groupId: string) => void;
+  onEmptyClick?: (x: number, y: number) => void;
 }
 
 function isUrgent(task: Task): boolean {
@@ -56,7 +57,7 @@ function isOverdue(task: Task): boolean {
   return new Date(task.dueDate).getTime() < Date.now();
 }
 
-export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup }: Props) {
+export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup, onEmptyClick }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bubblesRef = useRef<Bubble[]>([]);
   const animRef = useRef<number>(0);
@@ -328,6 +329,13 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
       if (!hit) {
         onSelect("");
         setConfirmGroup(null);
+        if (onEmptyClick) {
+          const rect = canvas.getBoundingClientRect();
+          onEmptyClick(
+            (e.clientX - rect.left) / rect.width,
+            (e.clientY - rect.top) / rect.height
+          );
+        }
       }
     };
 
@@ -364,7 +372,7 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
       canvas.removeEventListener("wheel", handleWheel);
       if (hoverTimer) clearTimeout(hoverTimer);
     };
-  }, [focusedId, onSelect, onGroup, onUngroup, popBubble]);
+  }, [focusedId, onSelect, onGroup, onUngroup, popBubble, onEmptyClick]);
 
   // Animation loop
   useEffect(() => {
