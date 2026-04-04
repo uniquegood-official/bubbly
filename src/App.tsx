@@ -40,6 +40,7 @@ function App() {
   const [subBubbleInput, setSubBubbleInput] = useState("");
   const [showSubInput, setShowSubInput] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
 
   // Edit state
   const [editTitle, setEditTitle] = useState("");
@@ -104,6 +105,29 @@ function App() {
     setSubBubbleInput("");
     setShowSubInput(false);
   }, [focusedTask, subBubbleInput, addSubTask]);
+
+  const handleAiGenerate = useCallback(async () => {
+    if (!focusedTask || aiLoading) return;
+    setAiLoading(true);
+    try {
+      const res = await fetch("/api/generate-subtasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: focusedTask.title, context: focusedTask.memo }),
+      });
+      if (!res.ok) throw new Error("API error");
+      const data = await res.json();
+      if (data.subtasks && Array.isArray(data.subtasks)) {
+        for (const sub of data.subtasks) {
+          addSubTask(focusedTask.id, sub.title);
+        }
+      }
+    } catch (err) {
+      console.error("AI subtask generation failed:", err);
+    } finally {
+      setAiLoading(false);
+    }
+  }, [focusedTask, aiLoading, addSubTask]);
 
   // Group tasks for focused bubble
   const focusedGroupTasks = focusedTask?.groupId
@@ -408,6 +432,18 @@ function App() {
                       <circle cx="12" cy="12" r="9" />
                       <line x1="12" y1="8" x2="12" y2="16" />
                       <line x1="8" y1="12" x2="16" y2="12" />
+                    </svg>
+                  </button>
+                  <button
+                    className={`edit-icon-btn ai ${aiLoading ? "loading" : ""}`}
+                    title="AI 서브태스크 생성"
+                    onClick={handleAiGenerate}
+                    disabled={aiLoading}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                      <path d="M2 17l10 5 10-5" />
+                      <path d="M2 12l10 5 10-5" />
                     </svg>
                   </button>
                   <button

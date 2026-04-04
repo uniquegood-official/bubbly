@@ -545,6 +545,24 @@ body {
   color: var(--danger);
 }
 
+.edit-icon-btn.ai {
+  color: var(--tertiary);
+}
+
+.edit-icon-btn.ai:hover {
+  background: var(--tertiary-container);
+}
+
+.edit-icon-btn.ai.loading {
+  animation: pulse 1s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .edit-close {
   background: var(--surface-low);
   border: none;

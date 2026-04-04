@@ -1,0 +1,17 @@
+{
+  "name": "Bubbly",
+  "short_name": "Bubbly",
+  "description": "버블로 할 일을 관리하세요",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6fafe",
+  "theme_color": "#815163",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
