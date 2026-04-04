@@ -544,6 +544,7 @@ function App() {
       <div className={`canvas-area ${timelineOpen ? "with-timeline" : ""}`}>
         <BubbleCanvas
           tasks={active}
+          allTasks={allActive}
           focusedId={focusedTaskId}
           onSelect={handleSelect}
           onComplete={completeTask}
@@ -682,6 +683,30 @@ function App() {
               ))}
             </div>
           </div>
+
+          {/* Category */}
+          {categories.length > 0 && (
+            <div className="edit-field">
+              <label>카테고리</label>
+              <div className="edit-category-pills">
+                <button
+                  className={`cat-pill ${!focusedTask.categoryId ? "active" : ""}`}
+                  onClick={() => isOwner && updateTask(focusedTask.id, { categoryId: undefined })}
+                >
+                  없음
+                </button>
+                {categories.map((cat) => (
+                  <button
+                    key={cat.id}
+                    className={`cat-pill ${focusedTask.categoryId === cat.id ? "active" : ""}`}
+                    onClick={() => isOwner && updateTask(focusedTask.id, { categoryId: cat.id })}
+                  >
+                    {cat.icon || "◆"} {cat.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="edit-field">
             <label>예상 시간</label>

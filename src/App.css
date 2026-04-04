@@ -298,6 +298,30 @@ body {
   background: var(--tertiary-container);
 }
 
+/* Edit panel category pills */
+.edit-category-pills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.cat-pill {
+  padding: 6px 12px;
+  border-radius: 9999px;
+  border: none;
+  background: var(--surface-low);
+  color: var(--on-surface-variant);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: none;
+}
+
+.cat-pill:hover { background: var(--surface-high); transform: scale(1.04); }
+.cat-pill.active { background: var(--tertiary-container); color: var(--on-tertiary-variant); }
+
 .sidebar-task-list {
   display: flex;
   flex-direction: column;

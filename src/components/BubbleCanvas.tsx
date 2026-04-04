@@ -36,7 +36,8 @@ interface Bubble {
 }
 
 interface Props {
-  tasks: Task[];
+  tasks: Task[];       // filtered tasks to render
+  allTasks: Task[];    // all active tasks for position persistence
   focusedId: string | null;
   onSelect: (id: string) => void;
   onComplete: (id: string) => void;
@@ -59,7 +60,7 @@ function isOverdue(task: Task): boolean {
   return new Date(task.dueDate).getTime() < Date.now();
 }
 
-export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup, onEmptyClick, onAddSub, onAiGenerate }: Props) {
+export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup, onEmptyClick, onAddSub, onAiGenerate }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bubblesRef = useRef<Bubble[]>([]);
   const animRef = useRef<number>(0);
@@ -92,10 +93,16 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
     groupCenters.current = centers;
   }, [tasks]);
 
-  // Sync bubbles with tasks
+  // Visible task ids (for rendering filter)
+  const visibleIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    visibleIds.current = new Set(tasks.map((t) => t.id));
+  }, [tasks]);
+
+  // Sync bubbles with ALL tasks (preserves positions across category switches)
   useEffect(() => {
     const existing = bubblesRef.current;
-    const newBubbles: Bubble[] = tasks.map((task) => {
+    const newBubbles: Bubble[] = allTasks.map((task) => {
       const found = existing.find((b) => b.id === task.id);
 
       const isCenter = groupCenters.current.has(task.id);
@@ -104,7 +111,6 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
 
       if (found) {
         found.task = task;
-        // Smooth radius transition — slow to avoid energy injection
         found.r += (targetR - found.r) * 0.08;
         return found;
       }
@@ -135,7 +141,7 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
       };
     });
     bubblesRef.current = newBubbles;
-  }, [tasks, size.w, size.h]);
+  }, [allTasks, size.w, size.h]);
 
   // Resize
   useEffect(() => {
@@ -192,8 +198,9 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
     };
 
     const findBubble = (mx: number, my: number) => {
+      const visible = visibleIds.current;
       for (const b of bubblesRef.current) {
-        if (b.popping) continue;
+        if (b.popping || !visible.has(b.id)) continue;
         const dx = mx - b.x;
         const dy = my - b.y;
         if (dx * dx + dy * dy < b.r * b.r) return b;
@@ -413,7 +420,9 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
     const draw = () => {
       time++;
       ctx.clearRect(0, 0, W, H);
-      const bubbles = bubblesRef.current;
+      const allBubbles = bubblesRef.current;
+      const visible = visibleIds.current;
+      const bubbles = allBubbles.filter((b) => visible.has(b.id));
       const isDragging = dragRef.current !== null;
 
       // Build group map
