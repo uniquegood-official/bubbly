@@ -28,6 +28,7 @@ function rowToTask(row: any): Task {
     createdAt: new Date(row.created_at).getTime(),
     groupId: row.group_id || undefined,
     ownerId: row.owner_id,
+    color: row.color || undefined,
   };
 }
 
@@ -122,7 +123,29 @@ export function useWorkspace(userId: string | null) {
     });
   }, [workspace, userId]);
 
-  const updateTask = useCallback(async (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate">>) => {
+  const addSubTask = useCallback(async (parentId: string, title: string) => {
+    if (!supabase || !workspace || !userId) return "";
+    const parent = tasks.find((t) => t.id === parentId);
+    if (!parent) return "";
+    const gid = parent.groupId || genId();
+    const newId = genId();
+    // Ensure parent has group
+    if (!parent.groupId) {
+      await supabase.from("tasks").update({ group_id: gid }).eq("id", parentId);
+    }
+    await supabase.from("tasks").insert({
+      id: newId,
+      workspace_id: workspace.id,
+      owner_id: userId,
+      title,
+      priority: parent.priority,
+      group_id: gid,
+      color: parent.color || null,
+    });
+    return newId;
+  }, [workspace, userId, tasks]);
+
+  const updateTask = useCallback(async (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate" | "color">>) => {
     if (!supabase) return;
     const dbUpdates: any = {};
     if (updates.title !== undefined) dbUpdates.title = updates.title;
@@ -130,6 +153,7 @@ export function useWorkspace(userId: string | null) {
     if (updates.priority !== undefined) dbUpdates.priority = updates.priority;
     if (updates.estimatedMinutes !== undefined) dbUpdates.estimated_minutes = updates.estimatedMinutes || null;
     if (updates.dueDate !== undefined) dbUpdates.due_date = updates.dueDate || null;
+    if (updates.color !== undefined) dbUpdates.color = updates.color || null;
     await supabase.from("tasks").update(dbUpdates).eq("id", id);
   }, []);
 
@@ -186,7 +210,7 @@ export function useWorkspace(userId: string | null) {
 
   return {
     workspace, tasks, loading,
-    addTask, updateTask, completeTask, reactivateTask, removeTask,
+    addTask, addSubTask, updateTask, completeTask, reactivateTask, removeTask,
     completeGroup, groupTasks, ungroupTask,
     getShareLink,
   };

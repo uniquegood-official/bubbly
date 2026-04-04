@@ -10,12 +10,13 @@ interface Store {
   tasks: Task[];
   focusedTaskId: string | null;
   addTask: (title: string, priority?: Priority, dueDate?: string, estimatedMinutes?: number) => void;
+  addSubTask: (parentId: string, title: string) => string;
   removeTask: (id: string) => void;
   completeTask: (id: string) => void;
   completeGroup: (groupId: string) => void;
   reactivateTask: (id: string) => void;
   setFocus: (id: string | null) => void;
-  updateTask: (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate">>) => void;
+  updateTask: (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate" | "color">>) => void;
   groupTasks: (taskId1: string, taskId2: string) => void;
   ungroupTask: (taskId: string) => void;
   getActiveTasks: () => Task[];
@@ -40,6 +41,28 @@ export const useStore = create<Store>()(
           createdAt: Date.now(),
         };
         set((s) => ({ tasks: [...s.tasks, task] }));
+      },
+
+      addSubTask: (parentId, title) => {
+        const state = get();
+        const parent = state.tasks.find((t) => t.id === parentId);
+        if (!parent) return "";
+        const gid = parent.groupId || genId();
+        const subTask: Task = {
+          id: genId(),
+          title,
+          priority: parent.priority,
+          completed: false,
+          createdAt: Date.now(),
+          groupId: gid,
+          color: parent.color,
+        };
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === parentId ? { ...t, groupId: gid } : t
+          ).concat(subTask),
+        }));
+        return subTask.id;
       },
 
       removeTask: (id) =>

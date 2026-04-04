@@ -9,21 +9,18 @@ import SearchBar from "./components/SearchBar";
 import AuthScreen from "./components/AuthScreen";
 import ShareButton from "./components/ShareButton";
 import type { Priority } from "./types/task";
+import { BUBBLE_COLORS } from "./types/task";
 import "./App.css";
 
 function App() {
-  // Auth (only when Supabase is configured)
   const auth = useAuth();
   const online = useWorkspace(auth.user?.id ?? null);
-
-  // Local store (fallback when no Supabase)
   const local = useStore();
-
-  // Use online if Supabase is configured and user is logged in
   const useOnline = isSupabaseConfigured && !!auth.user;
 
   const tasks = useOnline ? online.tasks : local.tasks;
   const addTask = useOnline ? online.addTask : local.addTask;
+  const addSubTask = useOnline ? online.addSubTask : local.addSubTask;
   const updateTask = useOnline ? online.updateTask : local.updateTask;
   const completeTask = useOnline ? online.completeTask : local.completeTask;
   const reactivateTask = useOnline ? online.reactivateTask : local.reactivateTask;
@@ -40,6 +37,9 @@ function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [selectedCompleted, setSelectedCompleted] = useState<string | null>(null);
   const lastCompletedClick = useRef<{ id: string; time: number } | null>(null);
+  const [subBubbleInput, setSubBubbleInput] = useState("");
+  const [showSubInput, setShowSubInput] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Edit state
   const [editTitle, setEditTitle] = useState("");
@@ -51,6 +51,8 @@ function App() {
       setEditTitle(focusedTask.title);
       setEditMemo(focusedTask.memo || "");
       setEditMinutes(focusedTask.estimatedMinutes?.toString() || "");
+      setShowSubInput(false);
+      setCopied(false);
     }
   }, [focusedTaskId]);
 
@@ -91,6 +93,35 @@ function App() {
     [focusedTask, updateTask]
   );
 
+  const handleColorChange = useCallback(
+    (colorId: string) => { if (focusedTask) updateTask(focusedTask.id, { color: colorId }); },
+    [focusedTask, updateTask]
+  );
+
+  const handleAddSubBubble = useCallback(() => {
+    if (!focusedTask || !subBubbleInput.trim()) return;
+    addSubTask(focusedTask.id, subBubbleInput.trim());
+    setSubBubbleInput("");
+    setShowSubInput(false);
+  }, [focusedTask, subBubbleInput, addSubTask]);
+
+  // Group tasks for focused bubble
+  const focusedGroupTasks = focusedTask?.groupId
+    ? active.filter((t) => t.groupId === focusedTask.groupId)
+    : focusedTask ? [focusedTask] : [];
+
+  const handleCopyGroup = useCallback(() => {
+    const text = focusedGroupTasks.map((t) => {
+      let line = `- ${t.title}`;
+      if (t.estimatedMinutes) line += ` (${t.estimatedMinutes}분)`;
+      if (t.memo) line += `\n  ${t.memo}`;
+      return line;
+    }).join("\n");
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [focusedGroupTasks]);
+
   // Global shortcut: N to open spotlight
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -108,12 +139,10 @@ function App() {
     (a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0)
   );
 
-  // Show auth screen if Supabase is configured but not logged in
   if (isSupabaseConfigured && !auth.user && !auth.loading) {
     return <AuthScreen onGoogle={auth.signInWithGoogle} onGithub={auth.signInWithGithub} loading={auth.loading} />;
   }
 
-  // Loading state
   if ((isSupabaseConfigured && auth.loading) || (useOnline && online.loading)) {
     return (
       <div className="auth-screen">
@@ -124,6 +153,8 @@ function App() {
       </div>
     );
   }
+
+  const isOwner = !useOnline || focusedTask?.ownerId === auth.user?.id;
 
   return (
     <div className="app">
@@ -258,10 +289,64 @@ function App() {
       {/* Edit Panel */}
       {focusedTask && (
         <div className="edit-panel">
+          {/* Header with action icons */}
           <div className="edit-panel-header">
-            <span className="edit-panel-title-label">태스크 편집</span>
+            <div className="edit-header-actions">
+              {isOwner && (
+                <>
+                  <button
+                    className="edit-icon-btn"
+                    title="서브 버블 추가"
+                    onClick={() => setShowSubInput(!showSubInput)}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <line x1="12" y1="8" x2="12" y2="16" />
+                      <line x1="8" y1="12" x2="16" y2="12" />
+                    </svg>
+                  </button>
+                  <button
+                    className="edit-icon-btn complete"
+                    title="완료하기"
+                    onClick={() => { completeTask(focusedTask.id); setFocusedTaskId(null); }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  </button>
+                  <button
+                    className="edit-icon-btn danger"
+                    title="삭제"
+                    onClick={() => { removeTask(focusedTask.id); setFocusedTaskId(null); }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </>
+              )}
+            </div>
             <button className="edit-close" onClick={handleClosePanel}>✕</button>
           </div>
+
+          {/* Sub-bubble add input */}
+          {showSubInput && (
+            <div className="sub-bubble-input-row">
+              <input
+                type="text"
+                value={subBubbleInput}
+                onChange={(e) => setSubBubbleInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleAddSubBubble(); if (e.key === "Escape") setShowSubInput(false); }}
+                placeholder="서브 버블 이름..."
+                className="sub-bubble-input"
+                autoFocus
+              />
+              <button className="sub-bubble-add-btn" onClick={handleAddSubBubble} disabled={!subBubbleInput.trim()}>
+                추가
+              </button>
+            </div>
+          )}
 
           <div className="edit-field">
             <input
@@ -272,7 +357,7 @@ function App() {
               onKeyDown={(e) => e.key === "Enter" && saveEdits()}
               className="edit-title-input"
               placeholder="제목"
-              disabled={useOnline && focusedTask.ownerId !== auth.user?.id}
+              disabled={!isOwner}
             />
           </div>
 
@@ -284,10 +369,34 @@ function App() {
                   key={p}
                   className={`ep-btn p${p} ${focusedTask.priority === p ? "active" : ""}`}
                   onClick={() => handlePriorityChange(p)}
-                  disabled={useOnline && focusedTask.ownerId !== auth.user?.id}
+                  disabled={!isOwner}
                 >
                   {p}
                 </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Color picker */}
+          <div className="edit-field">
+            <label>컬러</label>
+            <div className="edit-colors">
+              {BUBBLE_COLORS.map((c) => (
+                <button
+                  key={c.id}
+                  className={`color-dot ${(focusedTask.color || "default") === c.id ? "active" : ""}`}
+                  style={{
+                    background: c.id === "default"
+                      ? "linear-gradient(135deg, #d0dce5, #b8a4f0, #f0a090)"
+                      : c.light,
+                    borderColor: (focusedTask.color || "default") === c.id
+                      ? (c.dark || "var(--primary)")
+                      : "transparent",
+                  }}
+                  title={c.label}
+                  onClick={() => handleColorChange(c.id)}
+                  disabled={!isOwner}
+                />
               ))}
             </div>
           </div>
@@ -303,7 +412,7 @@ function App() {
                 placeholder="—"
                 min={1}
                 className="edit-minutes"
-                disabled={useOnline && focusedTask.ownerId !== auth.user?.id}
+                disabled={!isOwner}
               />
               <span>분</span>
             </div>
@@ -318,7 +427,7 @@ function App() {
               placeholder="메모를 남겨보세요..."
               className="edit-memo"
               rows={3}
-              disabled={useOnline && focusedTask.ownerId !== auth.user?.id}
+              disabled={!isOwner}
             />
           </div>
 
@@ -331,21 +440,41 @@ function App() {
             </div>
           )}
 
-          {(!useOnline || focusedTask.ownerId === auth.user?.id) && (
-            <div className="edit-bottom-actions">
-              <button className="edit-complete-btn" onClick={() => { completeTask(focusedTask.id); setFocusedTaskId(null); }}>
-                완료하기
-              </button>
-              <button
-                className="edit-delete-btn"
-                onClick={() => { removeTask(focusedTask.id); setFocusedTaskId(null); }}
-              >
-                삭제
-              </button>
+          {/* Group text view */}
+          {focusedGroupTasks.length > 1 && (
+            <div className="edit-field">
+              <div className="edit-group-text-header">
+                <label>그룹 내용</label>
+                <button className="copy-icon-btn" onClick={handleCopyGroup} title="복사">
+                  {copied ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              <div className="edit-group-text-list">
+                {focusedGroupTasks.map((t) => (
+                  <div
+                    key={t.id}
+                    className={`group-text-item ${t.id === focusedTask.id ? "current" : ""}`}
+                    onClick={() => handleSelect(t.id)}
+                  >
+                    <span className="group-text-dot" />
+                    <span className="group-text-title">{t.title}</span>
+                    {t.estimatedMinutes && <span className="group-text-time">{t.estimatedMinutes}분</span>}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
-          {useOnline && focusedTask.ownerId !== auth.user?.id && (
+          {!isOwner && (
             <div className="edit-readonly-notice">다른 사람의 태스크는 수정할 수 없어요</div>
           )}
 
