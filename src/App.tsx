@@ -29,10 +29,34 @@ function App() {
   const groupTasks = useOnline ? online.groupTasks : local.groupTasks;
   const ungroupTask = useOnline ? online.ungroupTask : local.ungroupTask;
 
+  // Categories (local store only for now)
+  const categories = local.categories;
+  const addCategory = local.addCategory;
+  // removeCategory / renameCategory available via local store when needed
+  const selectedCategoryId = local.selectedCategoryId;
+  const setSelectedCategory = local.setSelectedCategory;
+
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
-  const active = tasks.filter((t) => !t.completed);
+  const allActive = tasks.filter((t) => !t.completed);
   const completed = tasks.filter((t) => t.completed);
-  const focusedTask = active.find((t) => t.id === focusedTaskId);
+
+  // Filter active tasks by selected category
+  const active = (() => {
+    if (!selectedCategoryId) return allActive; // "전체"
+    const today = new Date().toDateString();
+    if (selectedCategoryId === "today") {
+      return allActive.filter((t) => {
+        if (t.dueDate && new Date(t.dueDate).toDateString() === today) return true;
+        return new Date(t.createdAt).toDateString() === today;
+      });
+    }
+    if (selectedCategoryId === "upcoming") {
+      return allActive.filter((t) => t.dueDate && new Date(t.dueDate).getTime() > Date.now());
+    }
+    return allActive.filter((t) => t.categoryId === selectedCategoryId);
+  })();
+
+  const focusedTask = allActive.find((t) => t.id === focusedTaskId);
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [selectedCompleted, setSelectedCompleted] = useState<string | null>(null);
@@ -41,6 +65,8 @@ function App() {
   const [showSubInput, setShowSubInput] = useState(false);
   const [copied, setCopied] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [showCategoryInput, setShowCategoryInput] = useState(false);
 
   // Edit state
   const [editTitle, setEditTitle] = useState("");
@@ -105,6 +131,37 @@ function App() {
     setSubBubbleInput("");
     setShowSubInput(false);
   }, [focusedTask, subBubbleInput, addSubTask]);
+
+  // Canvas floating action: open sub-input for a specific bubble
+  const handleCanvasAddSub = useCallback((id: string) => {
+    setFocusedTaskId(id);
+    setShowSubInput(true);
+  }, []);
+
+  // Canvas floating action: AI generate for a specific bubble
+  const handleCanvasAiGenerate = useCallback(async (id: string) => {
+    const task = allActive.find((t) => t.id === id);
+    if (!task || aiLoading) return;
+    setAiLoading(true);
+    try {
+      const res = await fetch("/api/generate-subtasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: task.title, context: task.memo }),
+      });
+      if (!res.ok) throw new Error("API error");
+      const data = await res.json();
+      if (data.subtasks && Array.isArray(data.subtasks)) {
+        for (const sub of data.subtasks) {
+          addSubTask(id, sub.title);
+        }
+      }
+    } catch (err) {
+      console.error("AI subtask generation failed:", err);
+    } finally {
+      setAiLoading(false);
+    }
+  }, [allActive, aiLoading, addSubTask]);
 
   const handleAiGenerate = useCallback(async () => {
     if (!focusedTask || aiLoading) return;
@@ -259,7 +316,7 @@ function App() {
       <div className={`timeline-sidebar ${timelineOpen ? "open" : ""}`}>
         <div className="sidebar-top">
           <div className="timeline-header">
-            <h3>버블 목록</h3>
+            <h3>Bubbly</h3>
             <button className="sidebar-fold-btn" onClick={() => setTimelineOpen(false)} title="접기">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
@@ -267,23 +324,105 @@ function App() {
             </button>
           </div>
 
-          {/* Active tasks by priority */}
-          {active.length > 0 && (
-            <div className="sidebar-section">
-              <div className="sidebar-section-label">진행 중 · {active.length}개</div>
-              <div className="sidebar-task-list">
-                {[...active].sort((a, b) => b.priority - a.priority).map((task) => (
-                  <div
-                    key={task.id}
-                    className={`sidebar-task-item ${focusedTaskId === task.id ? "active" : ""}`}
-                    onClick={() => handleSelect(task.id)}
-                  >
-                    <span className={`sidebar-priority-dot p${task.priority}`} />
-                    <span className="sidebar-task-title">{task.title}</span>
-                    {task.estimatedMinutes && <span className="sidebar-task-time">{task.estimatedMinutes}분</span>}
-                  </div>
-                ))}
+          {/* Category nav */}
+          <div className="sidebar-nav">
+            <div
+              className={`sidebar-nav-item ${!selectedCategoryId ? "active" : ""}`}
+              onClick={() => setSelectedCategory(null)}
+            >
+              <span className="sidebar-nav-icon">●</span>
+              <span>전체</span>
+              <span className="sidebar-nav-count">{allActive.length}</span>
+            </div>
+            <div
+              className={`sidebar-nav-item ${selectedCategoryId === "today" ? "active" : ""}`}
+              onClick={() => setSelectedCategory("today")}
+            >
+              <span className="sidebar-nav-icon">◐</span>
+              <span>오늘</span>
+              <span className="sidebar-nav-count">
+                {allActive.filter((t) => {
+                  const today = new Date().toDateString();
+                  if (t.dueDate && new Date(t.dueDate).toDateString() === today) return true;
+                  return new Date(t.createdAt).toDateString() === today;
+                }).length}
+              </span>
+            </div>
+            <div
+              className={`sidebar-nav-item ${selectedCategoryId === "upcoming" ? "active" : ""}`}
+              onClick={() => setSelectedCategory("upcoming")}
+            >
+              <span className="sidebar-nav-icon">▸</span>
+              <span>예정</span>
+              <span className="sidebar-nav-count">
+                {allActive.filter((t) => t.dueDate && new Date(t.dueDate).getTime() > Date.now()).length}
+              </span>
+            </div>
+
+            {categories.map((cat) => (
+              <div
+                key={cat.id}
+                className={`sidebar-nav-item ${selectedCategoryId === cat.id ? "active" : ""}`}
+                onClick={() => setSelectedCategory(cat.id)}
+              >
+                <span className="sidebar-nav-icon">{cat.icon || "◆"}</span>
+                <span>{cat.name}</span>
+                <span className="sidebar-nav-count">
+                  {allActive.filter((t) => t.categoryId === cat.id).length}
+                </span>
               </div>
+            ))}
+
+            {showCategoryInput ? (
+              <div className="sidebar-nav-item input">
+                <input
+                  type="text"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newCategoryName.trim()) {
+                      addCategory(newCategoryName.trim());
+                      setNewCategoryName("");
+                      setShowCategoryInput(false);
+                    }
+                    if (e.key === "Escape") setShowCategoryInput(false);
+                  }}
+                  placeholder="카테고리 이름..."
+                  autoFocus
+                  className="category-input"
+                />
+              </div>
+            ) : (
+              <div className="sidebar-nav-item add" onClick={() => setShowCategoryInput(true)}>
+                <span className="sidebar-nav-icon">+</span>
+                <span>카테고리 추가</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Active tasks by priority */}
+        <div className="sidebar-section">
+          <div className="sidebar-section-label">
+            {selectedCategoryId === "today" ? "오늘" : selectedCategoryId === "upcoming" ? "예정" : selectedCategoryId ? categories.find((c) => c.id === selectedCategoryId)?.name || "전체" : "전체"} · {active.length}개
+          </div>
+          {active.length > 0 ? (
+            <div className="sidebar-task-list">
+              {[...active].sort((a, b) => b.priority - a.priority).map((task) => (
+                <div
+                  key={task.id}
+                  className={`sidebar-task-item ${focusedTaskId === task.id ? "active" : ""}`}
+                  onClick={() => handleSelect(task.id)}
+                >
+                  <span className={`sidebar-priority-dot p${task.priority}`} />
+                  <span className="sidebar-task-title">{task.title}</span>
+                  {task.estimatedMinutes && <span className="sidebar-task-time">{task.estimatedMinutes}분</span>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="timeline-empty" style={{ padding: "20px" }}>
+              <p>버블이 없어요</p>
             </div>
           )}
         </div>
@@ -412,6 +551,8 @@ function App() {
           onUngroup={ungroupTask}
           onCompleteGroup={completeGroup}
           onEmptyClick={() => setSpotlightOpen(true)}
+          onAddSub={handleCanvasAddSub}
+          onAiGenerate={handleCanvasAiGenerate}
         />
       </div>
 

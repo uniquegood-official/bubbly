@@ -13,6 +13,13 @@ export interface Task {
   groupId?: string;
   ownerId?: string;
   color?: string;
+  categoryId?: string;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  icon?: string;
 }
 
 export const BUBBLE_COLORS = [

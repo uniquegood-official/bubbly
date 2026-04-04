@@ -44,6 +44,8 @@ interface Props {
   onUngroup: (id: string) => void;
   onCompleteGroup: (groupId: string) => void;
   onEmptyClick?: (x: number, y: number) => void;
+  onAddSub?: (id: string) => void;
+  onAiGenerate?: (id: string) => void;
 }
 
 function isUrgent(task: Task): boolean {
@@ -57,7 +59,7 @@ function isOverdue(task: Task): boolean {
   return new Date(task.dueDate).getTime() < Date.now();
 }
 
-export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup, onEmptyClick }: Props) {
+export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup, onEmptyClick, onAddSub, onAiGenerate }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bubblesRef = useRef<Bubble[]>([]);
   const animRef = useRef<number>(0);
@@ -66,7 +68,9 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
   const hoveredRef = useRef<string | null>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [confirmGroup, setConfirmGroup] = useState<{ groupId: string; x: number; y: number } | null>(null);
+  const [confirmPop, setConfirmPop] = useState<{ id: string; x: number; y: number } | null>(null);
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [floatingActions, setFloatingActions] = useState<{ id: string; x: number; y: number } | null>(null);
 
   // Build group info for center detection
   const groupCenters = useRef<Set<string>>(new Set());
@@ -275,20 +279,25 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
 
         if (isDoubleClick) {
           lastClickRef.current = null;
+          const rect = canvasRef.current!.getBoundingClientRect();
+          const screenX = b.x / (window.devicePixelRatio || 1) + rect.left;
+          const screenY = b.y / (window.devicePixelRatio || 1) + rect.top;
           if (b.task.groupId && groupCenters.current.has(b.id)) {
-            const rect = canvasRef.current!.getBoundingClientRect();
-            setConfirmGroup({
-              groupId: b.task.groupId!,
-              x: b.x / (window.devicePixelRatio || 1) + rect.left,
-              y: b.y / (window.devicePixelRatio || 1) + rect.top,
-            });
+            setConfirmGroup({ groupId: b.task.groupId!, x: screenX, y: screenY });
           } else {
-            popBubble(b.id);
+            setConfirmPop({ id: b.id, x: screenX, y: screenY });
           }
           return;
         }
 
+        // Single click → select + show floating actions
         onSelect(b.id);
+        const rect = canvasRef.current!.getBoundingClientRect();
+        setFloatingActions({
+          id: b.id,
+          x: b.x / (window.devicePixelRatio || 1) + rect.left,
+          y: (b.y - b.r) / (window.devicePixelRatio || 1) + rect.top - 12,
+        });
         return;
       }
 
@@ -329,6 +338,8 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
       if (!hit) {
         onSelect("");
         setConfirmGroup(null);
+        setConfirmPop(null);
+        setFloatingActions(null);
       }
     };
 
@@ -707,40 +718,92 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
     return () => cancelAnimationFrame(animRef.current);
   }, [size, focusedId]);
 
+  // Keyboard handler for confirm popups
+  useEffect(() => {
+    if (!confirmPop && !confirmGroup) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        if (confirmPop) { popBubble(confirmPop.id); setConfirmPop(null); }
+        else if (confirmGroup) { popGroup(confirmGroup.groupId); setConfirmGroup(null); }
+      } else if (e.key === "Escape") {
+        setConfirmPop(null);
+        setConfirmGroup(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [confirmPop, confirmGroup, popBubble, popGroup]);
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <canvas
         ref={canvasRef}
         style={{ width: size.w, height: size.h, display: "block", cursor: "default" }}
       />
+
+      {/* Floating action icons on selected bubble */}
+      {floatingActions && focusedId && (
+        <div
+          className="bubble-floating-actions"
+          style={{ left: floatingActions.x, top: floatingActions.y }}
+        >
+          {onAddSub && (
+            <button
+              className="bfa-btn"
+              title="서브 버블 추가"
+              onClick={() => { onAddSub(floatingActions.id); setFloatingActions(null); }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+          )}
+          {onAiGenerate && (
+            <button
+              className="bfa-btn ai"
+              title="AI 서브태스크 생성"
+              onClick={() => { onAiGenerate(floatingActions.id); setFloatingActions(null); }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z" />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Tooltip */}
       {tooltip && (
         <div className="bubble-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
           {tooltip.text}
         </div>
       )}
+
+      {/* Single bubble complete confirm */}
+      {confirmPop && (
+        <div className="group-confirm" style={{ left: confirmPop.x, top: confirmPop.y }}>
+          <p>버블을 터뜨릴까요?</p>
+          <div className="group-confirm-actions">
+            <button className="gc-btn yes" autoFocus onClick={() => { popBubble(confirmPop.id); setConfirmPop(null); }}>
+              네!
+            </button>
+            <button className="gc-btn no" onClick={() => setConfirmPop(null)}>
+              아니요
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Group complete confirm popup */}
       {confirmGroup && (
-        <div
-          className="group-confirm"
-          style={{ left: confirmGroup.x, top: confirmGroup.y }}
-        >
-          <p>{"\uD504\uB85C\uC81D\uD2B8 \uC804\uCCB4\uB97C \uC644\uB8CC\uD560\uAE4C\uC694?"}</p>
+        <div className="group-confirm" style={{ left: confirmGroup.x, top: confirmGroup.y }}>
+          <p>프로젝트 전체를 완료할까요?</p>
           <div className="group-confirm-actions">
-            <button
-              className="gc-btn yes"
-              onClick={() => {
-                popGroup(confirmGroup.groupId);
-                setConfirmGroup(null);
-              }}
-            >
-              {"\uC804\uCCB4 \uC644\uB8CC!"}
+            <button className="gc-btn yes" autoFocus onClick={() => { popGroup(confirmGroup.groupId); setConfirmGroup(null); }}>
+              전체 완료!
             </button>
-            <button
-              className="gc-btn no"
-              onClick={() => setConfirmGroup(null)}
-            >
-              {"\uC544\uB2C8\uC694"}
+            <button className="gc-btn no" onClick={() => setConfirmGroup(null)}>
+              아니요
             </button>
           </div>
         </div>

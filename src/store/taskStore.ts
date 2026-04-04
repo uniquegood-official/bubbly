@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Task, Priority } from "../types/task";
+import type { Task, Priority, Category } from "../types/task";
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -8,17 +8,23 @@ function genId(): string {
 
 interface Store {
   tasks: Task[];
+  categories: Category[];
   focusedTaskId: string | null;
-  addTask: (title: string, priority?: Priority, dueDate?: string, estimatedMinutes?: number) => void;
+  selectedCategoryId: string | null; // null = "전체", "today", "upcoming", or category id
+  addTask: (title: string, priority?: Priority, dueDate?: string, estimatedMinutes?: number, categoryId?: string) => void;
   addSubTask: (parentId: string, title: string) => string;
   removeTask: (id: string) => void;
   completeTask: (id: string) => void;
   completeGroup: (groupId: string) => void;
   reactivateTask: (id: string) => void;
   setFocus: (id: string | null) => void;
-  updateTask: (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate" | "color">>) => void;
+  updateTask: (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate" | "color" | "categoryId">>) => void;
   groupTasks: (taskId1: string, taskId2: string) => void;
   ungroupTask: (taskId: string) => void;
+  addCategory: (name: string, icon?: string) => string;
+  removeCategory: (id: string) => void;
+  renameCategory: (id: string, name: string) => void;
+  setSelectedCategory: (id: string | null) => void;
   getActiveTasks: () => Task[];
   getCompletedTasks: () => Task[];
   getGroupTasks: (groupId: string) => Task[];
@@ -28,9 +34,13 @@ export const useStore = create<Store>()(
   persist(
     (set, get) => ({
       tasks: [],
+      categories: [],
       focusedTaskId: null,
+      selectedCategoryId: null,
 
-      addTask: (title, priority = 3, dueDate, estimatedMinutes) => {
+      addTask: (title, priority = 3, dueDate, estimatedMinutes, categoryId) => {
+        const state = get();
+        const cat = categoryId ?? (state.selectedCategoryId && state.selectedCategoryId !== "today" && state.selectedCategoryId !== "upcoming" ? state.selectedCategoryId : undefined);
         const task: Task = {
           id: genId(),
           title,
@@ -39,6 +49,7 @@ export const useStore = create<Store>()(
           estimatedMinutes,
           completed: false,
           createdAt: Date.now(),
+          categoryId: cat,
         };
         set((s) => ({ tasks: [...s.tasks, task] }));
       },
@@ -56,6 +67,7 @@ export const useStore = create<Store>()(
           createdAt: Date.now(),
           groupId: gid,
           color: parent.color,
+          categoryId: parent.categoryId,
         };
         set((s) => ({
           tasks: s.tasks.map((t) =>
@@ -106,13 +118,8 @@ export const useStore = create<Store>()(
         const t1 = state.tasks.find((t) => t.id === taskId1);
         const t2 = state.tasks.find((t) => t.id === taskId2);
         if (!t1 || !t2) return;
-
-        // Determine group id: use existing or create new
         const gid = t1.groupId || t2.groupId || genId();
-
-        // Merge: if both have groups, merge t2's group into t1's
         const oldGroupId = t2.groupId;
-
         set((s) => ({
           tasks: s.tasks.map((t) => {
             if (t.id === taskId1 || t.id === taskId2) return { ...t, groupId: gid };
@@ -130,6 +137,26 @@ export const useStore = create<Store>()(
             return rest as Task;
           }),
         })),
+
+      addCategory: (name, icon) => {
+        const id = genId();
+        set((s) => ({ categories: [...s.categories, { id, name, icon }] }));
+        return id;
+      },
+
+      removeCategory: (id) =>
+        set((s) => ({
+          categories: s.categories.filter((c) => c.id !== id),
+          tasks: s.tasks.map((t) => t.categoryId === id ? { ...t, categoryId: undefined } : t),
+          selectedCategoryId: s.selectedCategoryId === id ? null : s.selectedCategoryId,
+        })),
+
+      renameCategory: (id, name) =>
+        set((s) => ({
+          categories: s.categories.map((c) => c.id === id ? { ...c, name } : c),
+        })),
+
+      setSelectedCategory: (id) => set({ selectedCategoryId: id }),
 
       getActiveTasks: () => get().tasks.filter((t) => !t.completed),
       getCompletedTasks: () => get().tasks.filter((t) => t.completed),
