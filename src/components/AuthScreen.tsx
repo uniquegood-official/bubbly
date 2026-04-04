@@ -9,7 +9,7 @@ export default function AuthScreen({ onGoogle, onGithub, loading }: Props) {
     return (
       <div className="auth-screen">
         <div className="auth-loading">
-          <div className="auth-logo">Popdo</div>
+          <div className="auth-logo">Bubbly</div>
           <p>로딩 중...</p>
         </div>
       </div>
@@ -19,7 +19,7 @@ export default function AuthScreen({ onGoogle, onGithub, loading }: Props) {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div className="auth-logo">Popdo</div>
+        <div className="auth-logo">Bubbly</div>
         <p className="auth-tagline">할 일을 버블로 관리하세요</p>
 
         <div className="auth-buttons">

@@ -329,13 +329,19 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
       if (!hit) {
         onSelect("");
         setConfirmGroup(null);
-        if (onEmptyClick) {
-          const rect = canvas.getBoundingClientRect();
-          onEmptyClick(
-            (e.clientX - rect.left) / rect.width,
-            (e.clientY - rect.top) / rect.height
-          );
-        }
+      }
+    };
+
+    const handleDblClick = (e: MouseEvent) => {
+      const { x, y } = getPos(e);
+      const hit = findBubble(x, y);
+      // Only fire on empty area — bubble double-click is handled in handleMouseUp
+      if (!hit && onEmptyClick) {
+        const rect = canvas.getBoundingClientRect();
+        onEmptyClick(
+          (e.clientX - rect.left) / rect.width,
+          (e.clientY - rect.top) / rect.height
+        );
       }
     };
 
@@ -361,6 +367,7 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
     canvas.addEventListener("mousemove", handleMouseMove);
     canvas.addEventListener("mouseup", handleMouseUp);
     canvas.addEventListener("click", handleClick);
+    canvas.addEventListener("dblclick", handleDblClick);
     canvas.addEventListener("mouseleave", handleMouseLeave);
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => {
@@ -368,6 +375,7 @@ export default function BubbleCanvas({ tasks, focusedId, onSelect, onComplete, o
       canvas.removeEventListener("mousemove", handleMouseMove);
       canvas.removeEventListener("mouseup", handleMouseUp);
       canvas.removeEventListener("click", handleClick);
+      canvas.removeEventListener("dblclick", handleDblClick);
       canvas.removeEventListener("mouseleave", handleMouseLeave);
       canvas.removeEventListener("wheel", handleWheel);
       if (hoverTimer) clearTimeout(hoverTimer);

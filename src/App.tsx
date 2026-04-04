@@ -177,7 +177,7 @@ function App() {
     return (
       <div className="auth-screen">
         <div className="auth-loading">
-          <div className="auth-logo">Popdo</div>
+          <div className="auth-logo">Bubbly</div>
           <p>로딩 중...</p>
         </div>
       </div>
@@ -191,7 +191,7 @@ function App() {
       {/* Top bar */}
       <div className="top-bar">
         <div className="top-bar-left">
-          <span className="logo">Popdo</span>
+          <span className="logo">Bubbly</span>
           <div className="stats">
             <div className="stat">
               <span className="stat-dot active" />
@@ -210,12 +210,16 @@ function App() {
           </button>
           <SearchBar tasks={tasks} onSelect={handleSelect} onReactivate={reactivateTask} />
           {useOnline && <ShareButton getShareLink={online.getShareLink} />}
-          <button
-            className="timeline-toggle"
-            onClick={() => setTimelineOpen(!timelineOpen)}
-          >
-            {timelineOpen ? "기록 접기" : `기록 (${completed.length})`}
-          </button>
+          {!timelineOpen && (
+            <button
+              className="timeline-toggle"
+              onClick={() => setTimelineOpen(true)}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+          )}
           {useOnline && (
             <button className="user-avatar" onClick={auth.signOut} title="로그아웃">
               {auth.profile?.avatar_url
@@ -227,143 +231,150 @@ function App() {
         </div>
       </div>
 
-      {/* Timeline sidebar */}
+      {/* Sidebar */}
       <div className={`timeline-sidebar ${timelineOpen ? "open" : ""}`}>
-        <div className="timeline-header">
-          <h3>완료 기록</h3>
-          <p>총 {completed.length}개 · 오늘 {todayCompleted.length}개</p>
-        </div>
-        {completedGroups.length === 0 ? (
-          <div className="timeline-empty">
-            <div className="te-icon">✦</div>
-            <p>버블을 터뜨려서 완료하세요</p>
+        <div className="sidebar-top">
+          <div className="timeline-header">
+            <h3>버블 목록</h3>
+            <button className="sidebar-fold-btn" onClick={() => setTimelineOpen(false)} title="접기">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
           </div>
-        ) : (
-          <div className="timeline-list">
-            {completedGroups.map((entry, ei) => {
-              if (entry.type === "group") {
-                return (
-                  <div key={entry.groupId} className="timeline-group-block">
-                    <div className="timeline-group-header">
-                      <span className="timeline-group-icon">✦</span>
-                      <span className="timeline-group-label">그룹 · {entry.tasks.length}개</span>
-                      <span className="timeline-group-time">
-                        {new Date(entry.latestAt).toLocaleString("ko-KR", {
-                          month: "short", day: "numeric",
-                        })}
-                      </span>
-                    </div>
-                    {entry.tasks.map((task) => {
-                      const isSelected = selectedCompleted === task.id;
-                      const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
-                      return (
-                        <div key={task.id}>
-                          <div
-                            className={`timeline-item grouped ${isSelected ? "selected" : ""}`}
-                            onClick={() => {
-                              const now = Date.now();
-                              const last = lastCompletedClick.current;
-                              if (last && last.id === task.id && now - last.time < 400 && isOwnTask) {
-                                reactivateTask(task.id);
-                                setSelectedCompleted(null);
-                                lastCompletedClick.current = null;
-                                return;
-                              }
-                              lastCompletedClick.current = { id: task.id, time: now };
-                              setSelectedCompleted(isSelected ? null : task.id);
-                            }}
-                          >
-                            <div className="timeline-line">
-                              <div className="timeline-dot small" />
-                              <div className="timeline-connector" />
-                            </div>
-                            <div className="timeline-content">
-                              <div className="timeline-title">{task.title}</div>
-                              <div className="timeline-time">
-                                {task.completedAt
-                                  ? new Date(task.completedAt).toLocaleString("ko-KR", {
-                                      hour: "2-digit", minute: "2-digit",
-                                    })
-                                  : ""}
+
+          {/* Active tasks by priority */}
+          {active.length > 0 && (
+            <div className="sidebar-section">
+              <div className="sidebar-section-label">진행 중 · {active.length}개</div>
+              <div className="sidebar-task-list">
+                {[...active].sort((a, b) => b.priority - a.priority).map((task) => (
+                  <div
+                    key={task.id}
+                    className={`sidebar-task-item ${focusedTaskId === task.id ? "active" : ""}`}
+                    onClick={() => handleSelect(task.id)}
+                  >
+                    <span className={`sidebar-priority-dot p${task.priority}`} />
+                    <span className="sidebar-task-title">{task.title}</span>
+                    {task.estimatedMinutes && <span className="sidebar-task-time">{task.estimatedMinutes}분</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Completed history */}
+        <div className="sidebar-section completed-section">
+          <div className="sidebar-section-label">완료 · {completed.length}개</div>
+          {completedGroups.length === 0 ? (
+            <div className="timeline-empty">
+              <div className="te-icon">✦</div>
+              <p>버블을 터뜨려서 완료하세요</p>
+            </div>
+          ) : (
+            <div className="timeline-list">
+              {completedGroups.map((entry, ei) => {
+                if (entry.type === "group") {
+                  return (
+                    <div key={entry.groupId} className="timeline-group-block">
+                      <div className="timeline-group-header">
+                        <span className="timeline-group-icon">✦</span>
+                        <span className="timeline-group-label">그룹 · {entry.tasks.length}개</span>
+                        <span className="timeline-group-time">
+                          {new Date(entry.latestAt).toLocaleString("ko-KR", { month: "short", day: "numeric" })}
+                        </span>
+                      </div>
+                      {entry.tasks.map((task) => {
+                        const isSelected = selectedCompleted === task.id;
+                        const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
+                        return (
+                          <div key={task.id}>
+                            <div
+                              className={`timeline-item grouped ${isSelected ? "selected" : ""}`}
+                              onClick={() => {
+                                const now = Date.now();
+                                const last = lastCompletedClick.current;
+                                if (last && last.id === task.id && now - last.time < 400 && isOwnTask) {
+                                  reactivateTask(task.id); setSelectedCompleted(null); lastCompletedClick.current = null; return;
+                                }
+                                lastCompletedClick.current = { id: task.id, time: now };
+                                setSelectedCompleted(isSelected ? null : task.id);
+                              }}
+                            >
+                              <div className="timeline-line">
+                                <div className="timeline-dot small" />
+                                <div className="timeline-connector" />
+                              </div>
+                              <div className="timeline-content">
+                                <div className="timeline-title">{task.title}</div>
+                                <div className="timeline-time">
+                                  {task.completedAt ? new Date(task.completedAt).toLocaleString("ko-KR", { hour: "2-digit", minute: "2-digit" }) : ""}
+                                </div>
                               </div>
                             </div>
+                            {isSelected && (
+                              <div className="timeline-detail">
+                                {task.memo && <p className="td-memo">{task.memo}</p>}
+                                {task.estimatedMinutes && <p className="td-est">예상 {task.estimatedMinutes}분</p>}
+                                {isOwnTask && (
+                                  <button className="td-reactivate" onClick={(e) => { e.stopPropagation(); reactivateTask(task.id); setSelectedCompleted(null); }}>
+                                    ↩ 다시 활성화
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
-                          {isSelected && (
-                            <div className="timeline-detail">
-                              {task.memo && <p className="td-memo">{task.memo}</p>}
-                              {task.estimatedMinutes && <p className="td-est">예상 {task.estimatedMinutes}분</p>}
-                              {isOwnTask && (
-                                <button
-                                  className="td-reactivate"
-                                  onClick={(e) => { e.stopPropagation(); reactivateTask(task.id); setSelectedCompleted(null); }}
-                                >
-                                  ↩ 다시 활성화
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              }
-              // Solo task
-              const task = entry.task;
-              const isSelected = selectedCompleted === task.id;
-              const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
-              return (
-                <div key={task.id}>
-                  <div
-                    className={`timeline-item ${isSelected ? "selected" : ""}`}
-                    onClick={() => {
-                      const now = Date.now();
-                      const last = lastCompletedClick.current;
-                      if (last && last.id === task.id && now - last.time < 400 && isOwnTask) {
-                        reactivateTask(task.id);
-                        setSelectedCompleted(null);
-                        lastCompletedClick.current = null;
-                        return;
-                      }
-                      lastCompletedClick.current = { id: task.id, time: now };
-                      setSelectedCompleted(isSelected ? null : task.id);
-                    }}
-                  >
-                    <div className="timeline-line">
-                      <div className="timeline-dot" />
-                      {ei < completedGroups.length - 1 && <div className="timeline-connector" />}
+                        );
+                      })}
                     </div>
-                    <div className="timeline-content">
-                      <div className="timeline-title">{task.title}</div>
-                      <div className="timeline-time">
-                        {task.completedAt
-                          ? new Date(task.completedAt).toLocaleString("ko-KR", {
-                              month: "short", day: "numeric",
-                              hour: "2-digit", minute: "2-digit",
-                            })
-                          : ""}
+                  );
+                }
+                const task = entry.task;
+                const isSelected = selectedCompleted === task.id;
+                const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
+                return (
+                  <div key={task.id}>
+                    <div
+                      className={`timeline-item ${isSelected ? "selected" : ""}`}
+                      onClick={() => {
+                        const now = Date.now();
+                        const last = lastCompletedClick.current;
+                        if (last && last.id === task.id && now - last.time < 400 && isOwnTask) {
+                          reactivateTask(task.id); setSelectedCompleted(null); lastCompletedClick.current = null; return;
+                        }
+                        lastCompletedClick.current = { id: task.id, time: now };
+                        setSelectedCompleted(isSelected ? null : task.id);
+                      }}
+                    >
+                      <div className="timeline-line">
+                        <div className="timeline-dot" />
+                        {ei < completedGroups.length - 1 && <div className="timeline-connector" />}
+                      </div>
+                      <div className="timeline-content">
+                        <div className="timeline-title">{task.title}</div>
+                        <div className="timeline-time">
+                          {task.completedAt ? new Date(task.completedAt).toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+                        </div>
                       </div>
                     </div>
+                    {isSelected && (
+                      <div className="timeline-detail">
+                        {task.memo && <p className="td-memo">{task.memo}</p>}
+                        {task.estimatedMinutes && <p className="td-est">예상 {task.estimatedMinutes}분</p>}
+                        {isOwnTask && (
+                          <button className="td-reactivate" onClick={(e) => { e.stopPropagation(); reactivateTask(task.id); setSelectedCompleted(null); }}>
+                            ↩ 다시 활성화
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {isSelected && (
-                    <div className="timeline-detail">
-                      {task.memo && <p className="td-memo">{task.memo}</p>}
-                      {task.estimatedMinutes && <p className="td-est">예상 {task.estimatedMinutes}분</p>}
-                      {isOwnTask && (
-                        <button
-                          className="td-reactivate"
-                          onClick={(e) => { e.stopPropagation(); reactivateTask(task.id); setSelectedCompleted(null); }}
-                        >
-                          ↩ 다시 활성화
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Canvas */}
