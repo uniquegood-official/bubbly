@@ -115,8 +115,32 @@ export function useWorkspace(userId: string | null) {
           setMembershipRole(membership.role);
         }
       } else {
-        setWorkspace(null);
-        setMembershipRole(null);
+        // No workspace found — create one automatically
+        const wsId = genId();
+        const { error: wsErr } = await client
+          .from("workspaces")
+          .insert({ id: wsId, name: "My Board", owner_id: userId });
+
+        if (!wsErr) {
+          await client
+            .from("workspace_members")
+            .insert({ workspace_id: wsId, user_id: userId, role: "owner" });
+
+          const { data: ws } = await client
+            .from("workspaces")
+            .select("*")
+            .eq("id", wsId)
+            .single();
+
+          if (ws) {
+            setWorkspace(ws);
+            setMembershipRole("owner");
+          }
+        } else {
+          console.error("Failed to create default workspace:", wsErr);
+          setWorkspace(null);
+          setMembershipRole(null);
+        }
       }
 
       setLoading(false);
@@ -168,8 +192,11 @@ export function useWorkspace(userId: string | null) {
 
   const addTask = useCallback(
     async (title: string, priority: Priority = 3, dueDate?: string, estimatedMinutes?: number) => {
-      if (!supabase || !workspace || !userId) return;
-      await supabase.from("tasks").insert({
+      if (!supabase || !workspace || !userId) {
+        console.error("addTask: missing context", { supabase: !!supabase, workspace: !!workspace, userId });
+        return;
+      }
+      const { error } = await supabase.from("tasks").insert({
         id: genId(),
         workspace_id: workspace.id,
         owner_id: userId,
@@ -178,6 +205,7 @@ export function useWorkspace(userId: string | null) {
         due_date: dueDate || null,
         estimated_minutes: estimatedMinutes || null,
       });
+      if (error) console.error("addTask failed:", error);
     },
     [workspace, userId],
   );
@@ -351,6 +379,33 @@ export function useWorkspace(userId: string | null) {
     [workspace],
   );
 
+  const migrateLocalTasks = useCallback(
+    async (localTasks: Task[]) => {
+      if (!supabase || !workspace || !userId || localTasks.length === 0) return;
+
+      const rows = localTasks.map((t) => ({
+        id: genId(),
+        workspace_id: workspace.id,
+        owner_id: userId,
+        title: t.title,
+        priority: t.priority,
+        memo: t.memo || null,
+        estimated_minutes: t.estimatedMinutes || null,
+        due_date: t.dueDate || null,
+        completed: t.completed,
+        completed_at: t.completedAt ? new Date(t.completedAt).toISOString() : null,
+        group_id: t.groupId || null,
+        color: t.color || null,
+      }));
+
+      const { error } = await supabase.from("tasks").insert(rows);
+      if (error) {
+        console.error("Failed to migrate local tasks:", error);
+      }
+    },
+    [workspace, userId],
+  );
+
   return {
     workspace,
     tasks,
@@ -370,6 +425,7 @@ export function useWorkspace(userId: string | null) {
     groupTasks,
     ungroupTask,
     getShareLink,
+    migrateLocalTasks,
   };
 }
 

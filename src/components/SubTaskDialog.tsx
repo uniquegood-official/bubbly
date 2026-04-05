@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { Task } from "../types/task";
 import { BUBBLE_COLORS } from "../types/task";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   open: boolean;
@@ -18,6 +19,7 @@ function getNextBubbleColor(currentColor?: string): string {
 }
 
 export default function SubTaskDialog({ open, parentTask, onClose, onAdd }: Props) {
+  const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [color, setColor] = useState(() => getNextBubbleColor(parentTask.color));
   const inputRef = useRef<HTMLInputElement>(null);
@@ -53,12 +55,12 @@ export default function SubTaskDialog({ open, parentTask, onClose, onAdd }: Prop
         className="sub-task-dialog-card"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sub-task-dialog-parent">↳ {parentTask.title} 에 서브 버블 추가</div>
+        <div className="sub-task-dialog-parent">↳ {parentTask.title} — {t("edit.addSub")}</div>
         <input
           ref={inputRef}
           type="text"
           className="spotlight-input"
-          placeholder="서브 버블 이름..."
+          placeholder={t("sub.namePlaceholder")}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => {
@@ -82,9 +84,9 @@ export default function SubTaskDialog({ open, parentTask, onClose, onAdd }: Prop
           ))}
         </div>
         <div className="sub-task-form-footer">
-          <button className="sub-task-cancel" onClick={onClose}>취소</button>
+          <button className="sub-task-cancel" onClick={onClose}>{t("delete.no")}</button>
           <button className="sub-task-submit" onClick={handleSubmit} disabled={!title.trim()}>
-            추가
+            {t("mobile.add")}
           </button>
         </div>
       </div>

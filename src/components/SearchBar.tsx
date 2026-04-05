@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { Task } from "../types/task";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   tasks: Task[];
@@ -20,6 +21,7 @@ function highlightMatch(text: string, query: string) {
 }
 
 export default function SearchBar({ tasks, onSelect, onReactivate, compact = false }: Props) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -48,15 +50,21 @@ export default function SearchBar({ tasks, onSelect, onReactivate, compact = fal
       )
     : [];
 
+  const handleOpen = () => {
+    setOpen(!open);
+    if (!open) {
+      // Close detail panel when search opens
+      onSelect("");
+    }
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
   return (
     <div className="search-bar">
       <button
         className={`search-toggle ${compact ? "compact" : ""}`}
-        onClick={() => {
-          setOpen(!open);
-          setTimeout(() => inputRef.current?.focus(), 50);
-        }}
-        title="검색"
+        onClick={handleOpen}
+        title={t("topbar.search")}
       >
         {compact ? (
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -64,7 +72,7 @@ export default function SearchBar({ tasks, onSelect, onReactivate, compact = fal
             <path d="m21 21-4.35-4.35" />
           </svg>
         ) : (
-          "⌘K 검색"
+          `⌘K ${t("topbar.search")}`
         )}
       </button>
 
@@ -75,7 +83,7 @@ export default function SearchBar({ tasks, onSelect, onReactivate, compact = fal
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="태스크 검색..."
+            placeholder={t("search.placeholder")}
             className="search-input"
           />
           {query.trim() ? (
@@ -101,16 +109,16 @@ export default function SearchBar({ tasks, onSelect, onReactivate, compact = fal
                       dangerouslySetInnerHTML={{ __html: highlightMatch(task.title, query) }}
                     />
                     <span className="sr-meta">
-                      {task.completed ? "완료" : `P${task.priority}`}
+                      {task.completed ? t("sidebar.completed") : `P${task.priority}`}
                     </span>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="search-empty">결과 없음</div>
+              <div className="search-empty">{t("search.noResults")}</div>
             )
           ) : (
-            <div className="search-empty">검색어를 입력하세요</div>
+            <div className="search-empty">{t("search.hint")}</div>
           )}
         </div>
       )}

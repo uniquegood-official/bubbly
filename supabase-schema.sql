@@ -255,6 +255,35 @@ grant execute on function public.join_workspace_by_invite(text) to authenticated
 grant execute on function public.ensure_workspace_share_link(uuid, text, boolean) to authenticated;
 grant execute on function public.redeem_workspace_share_link(text) to authenticated;
 
+-- Helper functions (security definer = bypasses RLS, prevents recursion)
+create or replace function public.is_workspace_member(ws_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.workspace_members
+    where workspace_id = ws_id and user_id = auth.uid()
+  );
+$$;
+
+create or replace function public.get_workspace_role(ws_id uuid)
+returns text
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select role from public.workspace_members
+  where workspace_id = ws_id and user_id = auth.uid()
+  limit 1;
+$$;
+
+grant execute on function public.is_workspace_member(uuid) to authenticated;
+grant execute on function public.get_workspace_role(uuid) to authenticated;
+
 -- RLS Policies
 alter table public.profiles enable row level security;
 alter table public.workspaces enable row level security;
@@ -268,153 +297,57 @@ create policy "Users can update own profile" on public.profiles for update using
 
 -- Workspaces: viewable if member
 create policy "Workspaces viewable by members" on public.workspaces for select
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspaces.id
-        and wm.user_id = auth.uid()
-    )
-  );
+  using (public.is_workspace_member(id));
 create policy "Workspace owner can update" on public.workspaces for update
   using (owner_id = auth.uid());
 create policy "Anyone can create workspace" on public.workspaces for insert
   with check (owner_id = auth.uid());
 
--- Workspace members
+-- Workspace members (uses helper functions to avoid self-referencing recursion)
 create policy "Members can view co-members" on public.workspace_members for select
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_members.workspace_id
-        and wm.user_id = auth.uid()
-    )
-  );
+  using (public.is_workspace_member(workspace_id));
+
 create policy "Owners can add members" on public.workspace_members for insert
-  with check (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_members.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  );
+  with check (public.get_workspace_role(workspace_id) = 'owner');
+
 create policy "Owners can update member roles" on public.workspace_members for update
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_members.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_members.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  );
+  using (public.get_workspace_role(workspace_id) = 'owner')
+  with check (public.get_workspace_role(workspace_id) = 'owner');
+
 create policy "Owners can remove members and members can leave" on public.workspace_members for delete
   using (
     user_id = auth.uid()
-    or exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_members.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
+    or public.get_workspace_role(workspace_id) = 'owner'
   );
 
 -- Share links
 create policy "Owners can view share links" on public.workspace_share_links for select
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_share_links.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  );
+  using (public.get_workspace_role(workspace_id) = 'owner');
+
 create policy "Owners can create share links" on public.workspace_share_links for insert
-  with check (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_share_links.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  );
+  with check (public.get_workspace_role(workspace_id) = 'owner');
+
 create policy "Owners can update share links" on public.workspace_share_links for update
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_share_links.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  );
+  using (public.get_workspace_role(workspace_id) = 'owner');
+
 create policy "Owners can delete share links" on public.workspace_share_links for delete
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = workspace_share_links.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role = 'owner'
-    )
-  );
+  using (public.get_workspace_role(workspace_id) = 'owner');
 
 -- Tasks: viewable by workspace members, editable by owners/editors
 create policy "Tasks viewable by workspace members" on public.tasks for select
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = tasks.workspace_id
-        and wm.user_id = auth.uid()
-    )
-  );
+  using (public.is_workspace_member(workspace_id));
+
 create policy "Editors can add tasks" on public.tasks for insert
   with check (
     owner_id = auth.uid()
-    and exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = tasks.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role in ('owner', 'editor')
-    )
+    and public.get_workspace_role(workspace_id) in ('owner', 'editor')
   );
+
 create policy "Editors can update tasks" on public.tasks for update
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = tasks.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role in ('owner', 'editor')
-    )
-  );
+  using (public.get_workspace_role(workspace_id) in ('owner', 'editor'));
+
 create policy "Editors can delete tasks" on public.tasks for delete
-  using (
-    exists (
-      select 1
-      from public.workspace_members wm
-      where wm.workspace_id = tasks.workspace_id
-        and wm.user_id = auth.uid()
-        and wm.role in ('owner', 'editor')
-    )
-  );
+  using (public.get_workspace_role(workspace_id) in ('owner', 'editor'));
 
 -- Enable realtime for tasks
 alter publication supabase_realtime add table public.tasks;

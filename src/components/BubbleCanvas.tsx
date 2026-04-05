@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import type { Task } from "../types/task";
 import { BUBBLE_COLORS } from "../types/task";
+import { useI18n } from "../lib/i18n";
 
 const PRIORITY_RADIUS: Record<number, number> = {
   1: 30, 2: 40, 3: 52, 4: 66, 5: 82,
@@ -69,6 +70,7 @@ export default function BubbleCanvas({
   onEmptyClick, onAddSub, onAiGenerate,
   onDeleteMultiple, onCompleteMultiple, onGroupMultiple, onDuplicateMultiple,
 }: Props) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bubblesRef = useRef<Bubble[]>([]);
   const animRef = useRef<number>(0);
@@ -76,6 +78,7 @@ export default function BubbleCanvas({
   const dragRef = useRef<{ bubbleId: string; offsetX: number; offsetY: number; startX: number; startY: number } | null>(null);
   const hoveredRef = useRef<string | null>(null);
   const rectSelectRef = useRef<{ sx: number; sy: number; ex: number; ey: number } | null>(null);
+  const justRectSelectedRef = useRef(false);
   const selectedIdsRef = useRef<Set<string>>(new Set());
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [confirmGroup, setConfirmGroup] = useState<{ groupId: string; x: number; y: number } | null>(null);
@@ -119,12 +122,15 @@ export default function BubbleCanvas({
   useEffect(() => {
     const existing = bubblesRef.current;
     const dpr = window.devicePixelRatio || 1;
+    // On high-DPR mobile screens, scale down radius so bubbles fit
+    const isMobileCanvas = size.w < 500;
+    const rScale = isMobileCanvas ? Math.min(dpr, 1.5) : dpr;
     const newBubbles: Bubble[] = allTasks.map((task) => {
       const found = existing.find((b) => b.id === task.id);
 
       const isCenter = groupCenters.current.has(task.id);
-      const baseR = PRIORITY_RADIUS[task.priority] * dpr;
-      const targetR = isCenter ? Math.max(baseR, 90 * dpr) : baseR;
+      const baseR = PRIORITY_RADIUS[task.priority] * rScale;
+      const targetR = isCenter ? Math.max(baseR, 90 * rScale) : baseR;
 
       if (found) {
         found.task = task;
@@ -199,7 +205,7 @@ export default function BubbleCanvas({
     [onCompleteGroup]
   );
 
-  const lastClickRef = useRef<{ id: string; time: number } | null>(null);
+  const clickHistoryRef = useRef<{ id: string; time: number }[]>([]);
 
   // Mouse/touch/drag handlers
   useEffect(() => {
@@ -227,6 +233,25 @@ export default function BubbleCanvas({
       const { x, y } = getPos(e);
       const hit = findBubble(x, y);
       if (hit) {
+        // Shift+click: toggle selection
+        if (e.shiftKey) {
+          setSelectedBubbleIds((prev) => {
+            const s = new Set(prev);
+            if (s.has(hit.id)) { s.delete(hit.id); } else { s.add(hit.id); }
+            const arr = [...s];
+            if (arr.length > 0) {
+              const rect = canvas.getBoundingClientRect();
+              const matching = bubblesRef.current.filter((b) => s.has(b.id));
+              const avgX = matching.reduce((ss, b) => ss + b.x, 0) / matching.length;
+              const topY = Math.min(...matching.map((b) => b.y - b.r));
+              setMultiActionPos({ x: avgX / dpr + rect.left, y: topY / dpr + rect.top - 12 });
+            } else {
+              setMultiActionPos(null);
+            }
+            return arr;
+          });
+          return;
+        }
         setSelectedBubbleIds([]);
         setMultiActionPos(null);
         dragRef.current = { bubbleId: hit.id, offsetX: x - hit.x, offsetY: y - hit.y, startX: hit.x, startY: hit.y };
@@ -296,7 +321,7 @@ export default function BubbleCanvas({
       }
     };
 
-    const handleMouseUp = (_e: MouseEvent) => {
+    const handleMouseUp = (e: MouseEvent) => {
       // Rect selection end
       if (rectSelectRef.current) {
         const rs = rectSelectRef.current;
@@ -313,11 +338,20 @@ export default function BubbleCanvas({
               b.x >= minX && b.x <= maxX && b.y >= minY && b.y <= maxY
           );
           if (inRect.length > 0) {
-            setSelectedBubbleIds(inRect.map((b) => b.id));
-            const rect2 = canvas.getBoundingClientRect();
-            const avgX = inRect.reduce((s, b) => s + b.x, 0) / inRect.length;
-            const topY = Math.min(...inRect.map((b) => b.y - b.r));
-            setMultiActionPos({ x: avgX / dpr + rect2.left, y: topY / dpr + rect2.top - 12 });
+            justRectSelectedRef.current = true;
+            const newIds = inRect.map((b) => b.id);
+            setSelectedBubbleIds((prev) => {
+              // Shift: merge with existing selection
+              const merged = e.shiftKey ? [...new Set([...prev, ...newIds])] : newIds;
+              const matching = bubblesRef.current.filter((b) => merged.includes(b.id));
+              if (matching.length > 0) {
+                const rect2 = canvas.getBoundingClientRect();
+                const avgX = matching.reduce((s, b) => s + b.x, 0) / matching.length;
+                const topY = Math.min(...matching.map((b) => b.y - b.r));
+                setMultiActionPos({ x: avgX / dpr + rect2.left, y: topY / dpr + rect2.top - 12 });
+              }
+              return merged;
+            });
             return;
           }
         }
@@ -338,12 +372,24 @@ export default function BubbleCanvas({
 
       if (totalMoved < 8) {
         const now = Date.now();
-        const lastClick = lastClickRef.current;
-        const isDoubleClick = canEdit && lastClick && lastClick.id === b.id && now - lastClick.time < 400;
-        lastClickRef.current = { id: b.id, time: now };
+        const history = clickHistoryRef.current;
+        // Clean old clicks (>600ms)
+        while (history.length > 0 && now - history[0].time > 600) history.shift();
+        history.push({ id: b.id, time: now });
 
-        if (isDoubleClick) {
-          lastClickRef.current = null;
+        // Count recent clicks on same bubble
+        const recentClicks = history.filter((c) => c.id === b.id);
+
+        if (canEdit && recentClicks.length >= 3) {
+          // Triple click -> add sub-task
+          clickHistoryRef.current = [];
+          if (onAddSub) onAddSub(b.id);
+          return;
+        }
+
+        if (canEdit && recentClicks.length === 2) {
+          // Double click -> pop/complete with confirm
+          clickHistoryRef.current = [];
           const rect = canvasRef.current!.getBoundingClientRect();
           const screenX = b.x / dpr + rect.left;
           const screenY = b.y / dpr + rect.top;
@@ -402,6 +448,11 @@ export default function BubbleCanvas({
 
     const handleClick = (e: MouseEvent) => {
       if (dragRef.current) return;
+      // Skip if we just finished a rect selection
+      if (justRectSelectedRef.current) {
+        justRectSelectedRef.current = false;
+        return;
+      }
       const { x, y } = getPos(e);
       const hit = findBubble(x, y);
       if (!hit) {
@@ -480,11 +531,22 @@ export default function BubbleCanvas({
       const totalMoved = Math.sqrt((b.x - drag.startX) ** 2 + (b.y - drag.startY) ** 2);
       if (totalMoved < 12) {
         const now = Date.now();
-        const lastClick = lastClickRef.current;
-        const isDoubleClick = canEdit && lastClick && lastClick.id === b.id && now - lastClick.time < 500;
-        lastClickRef.current = { id: b.id, time: now };
-        if (isDoubleClick) {
-          lastClickRef.current = null;
+        const history = clickHistoryRef.current;
+        while (history.length > 0 && now - history[0].time > 600) history.shift();
+        history.push({ id: b.id, time: now });
+        const recentClicks = history.filter((c) => c.id === b.id);
+
+        if (canEdit && recentClicks.length >= 3) {
+          // Triple click -> add sub-task
+          clickHistoryRef.current = [];
+          if (onAddSub) onAddSub(b.id);
+          mouseRef.current = null;
+          return;
+        }
+
+        if (canEdit && recentClicks.length === 2) {
+          // Double click -> pop/complete with confirm
+          clickHistoryRef.current = [];
           const rect2 = canvas.getBoundingClientRect();
           const screenX = b.x / dpr + rect2.left;
           const screenY = b.y / dpr + rect2.top;
@@ -496,6 +558,7 @@ export default function BubbleCanvas({
           mouseRef.current = null;
           return;
         }
+
         onSelect(b.id);
         if (canEdit) {
           const rect2 = canvas.getBoundingClientRect();
@@ -581,7 +644,7 @@ export default function BubbleCanvas({
         }
       }
 
-      // Physics
+      // Physics — zero gravity, floating in place
       for (const b of bubbles) {
         if (b.popping) {
           b.popProgress += 0.04;
@@ -589,7 +652,21 @@ export default function BubbleCanvas({
         }
 
         const beingDragged = isDragging && dragRef.current!.bubbleId === b.id;
-        if (beingDragged) continue;
+        if (beingDragged) {
+          // While dragging, attract nearby bubbles proportional to dragged bubble mass
+          const dragForce = (b.r / 50) * 0.06;
+          for (const other of bubbles) {
+            if (other.id === b.id || other.popping) continue;
+            const dx = b.x - other.x;
+            const dy = b.y - other.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < b.r * 4 && dist > b.r + other.r) {
+              other.vx += (dx / dist) * dragForce;
+              other.vy += (dy / dist) * dragForce;
+            }
+          }
+          continue;
+        }
 
         const inGroup = b.task.groupId && groups[b.task.groupId] && groups[b.task.groupId].length > 1;
 
@@ -647,15 +724,28 @@ export default function BubbleCanvas({
           }
         }
 
+        // Gentle center pull — prevent groups drifting to edges
+        const cxCanvas = W / 2;
+        const cyCanvas = H / 2;
+        const distFromCenter = Math.sqrt((b.x - cxCanvas) ** 2 + (b.y - cyCanvas) ** 2);
+        const maxDist = Math.min(W, H) * 0.35;
+        if (distFromCenter > maxDist) {
+          const pull = 0.002 * ((distFromCenter - maxDist) / maxDist);
+          b.vx += (cxCanvas - b.x) / distFromCenter * pull;
+          b.vy += (cyCanvas - b.y) / distFromCenter * pull;
+        }
+
+        // Wall bounce — keep bubbles inside canvas
         const pad = 4;
         if (b.x - b.r < pad) { b.x = b.r + pad; b.vx = Math.abs(b.vx) * 0.3; }
         if (b.x + b.r > W - pad) { b.x = W - b.r - pad; b.vx = -Math.abs(b.vx) * 0.3; }
         if (b.y - b.r < pad) { b.y = b.r + pad; b.vy = Math.abs(b.vy) * 0.3; }
         if (b.y + b.r > H - pad) { b.y = H - b.r - pad; b.vy = -Math.abs(b.vy) * 0.3; }
 
+        // Gentle drift (no gravity — bubbles float in place)
         if (!inGroup) {
-          b.vx += (Math.random() - 0.5) * 0.04;
-          b.vy += (Math.random() - 0.5) * 0.04;
+          b.vx += (Math.random() - 0.5) * 0.02;
+          b.vy += (Math.random() - 0.5) * 0.02;
         }
 
         const damp = inGroup ? 0.9 : 0.985;
@@ -793,6 +883,35 @@ export default function BubbleCanvas({
           ctx.setLineDash([]);
         }
 
+        // Timer glow — pulsing countdown effect
+        const hasTimer = b.task.timerEnd && b.task.timerEnd > Date.now();
+        if (hasTimer) {
+          const remaining = b.task.timerEnd! - Date.now();
+          const urgency = remaining < 30000 ? 0.8 : remaining < 60000 ? 0.5 : 0.3;
+          const pulseSpeed = remaining < 30000 ? 0.12 : remaining < 60000 ? 0.08 : 0.04;
+          const timerPulse = Math.sin(time * pulseSpeed) * 0.5 + 0.5;
+          const timerR = b.r + 14 + timerPulse * 8;
+          const timerGrad = ctx.createRadialGradient(b.x, b.y + wobble, b.r, b.x, b.y + wobble, timerR);
+          const timerColor = remaining < 30000 ? "#ef4444" : remaining < 60000 ? "#f59e0b" : "#3b82f6";
+          timerGrad.addColorStop(0, timerColor + Math.round(urgency * timerPulse * 120).toString(16).padStart(2, "0"));
+          timerGrad.addColorStop(1, timerColor + "00");
+          ctx.beginPath();
+          ctx.arc(b.x, b.y + wobble, timerR, 0, Math.PI * 2);
+          ctx.fillStyle = timerGrad;
+          ctx.fill();
+
+          // Progress ring
+          const totalDuration = (b.task.estimatedMinutes || 25) * 60 * 1000;
+          const elapsed = totalDuration - remaining;
+          const progress = Math.min(1, elapsed / totalDuration);
+          ctx.beginPath();
+          ctx.arc(b.x, b.y + wobble, b.r + 4, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+          ctx.strokeStyle = timerColor + "aa";
+          ctx.lineWidth = 3;
+          ctx.lineCap = "round";
+          ctx.stroke();
+        }
+
         // Glow
         if (isFocused || urgent || overdue || isGroupCenter) {
           const glowColor = overdue ? "#f87171" : urgent ? "#fbbf24" : isGroupCenter ? "#a78bfa" : colorLight;
@@ -853,8 +972,24 @@ export default function BubbleCanvas({
         ctx.fillStyle = colorText;
         ctx.fillText(label, b.x, b.y + wobble - 4);
 
-        // Subtitle
-        if (b.task.estimatedMinutes) {
+        // Timer countdown or estimated minutes
+        if (b.task.timerEnd) {
+          const remaining = b.task.timerEnd - Date.now();
+          if (remaining <= 0 && !b.popping) {
+            // Timer expired — auto pop
+            b.popping = true;
+            b.popProgress = 0;
+            setTimeout(() => onComplete(b.id), 500);
+          } else if (remaining > 0) {
+            const totalSec = Math.ceil(remaining / 1000);
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            const timerText = min > 0 ? `${min}:${sec.toString().padStart(2, "0")}` : `${sec}s`;
+            ctx.font = `700 ${Math.max(10, b.r * 0.2)}px "Plus Jakarta Sans", -apple-system, sans-serif`;
+            ctx.fillStyle = remaining < 30000 ? "#e11d48" : colorText + "cc";
+            ctx.fillText(timerText, b.x, b.y + wobble + b.r * 0.32);
+          }
+        } else if (b.task.estimatedMinutes) {
           ctx.font = `500 ${Math.max(9, b.r * 0.18)}px "Plus Jakarta Sans", -apple-system, sans-serif`;
           ctx.fillStyle = colorText + "99";
           ctx.fillText(`${b.task.estimatedMinutes}\uBD84`, b.x, b.y + wobble + b.r * 0.32);
@@ -924,7 +1059,7 @@ export default function BubbleCanvas({
           {onAddSub && (
             <button
               className="bfa-btn"
-              title="서브 버블 추가"
+              title={t("edit.addSub")}
               onClick={() => { onAddSub(floatingActions.id); setFloatingActions(null); }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -935,11 +1070,14 @@ export default function BubbleCanvas({
           {onAiGenerate && (
             <button
               className="bfa-btn ai"
-              title="AI 서브태스크 생성"
+              title={t("edit.aiSub")}
               onClick={() => { onAiGenerate(floatingActions.id); setFloatingActions(null); }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <rect x="1" y="4" width="16" height="16" rx="3" stroke="currentColor" strokeWidth="2"/>
+                <text x="9" y="15.5" textAnchor="middle" fill="currentColor" fontSize="8" fontWeight="bold" fontFamily="system-ui">AI</text>
+                <path d="M18 2l.6 1.4L20 4l-1.4.6L18 6l-.6-1.4L16 4l1.4-.6L18 2z" fill="currentColor"/>
+                <path d="M22 7l.4.9.9.4-.9.4-.4.9-.4-.9-.9-.4.9-.4.4-.9z" fill="currentColor" opacity="0.5"/>
               </svg>
             </button>
           )}
@@ -956,13 +1094,13 @@ export default function BubbleCanvas({
       {/* Single bubble complete confirm */}
       {confirmPop && (
         <div className="group-confirm" style={{ left: confirmPop.x, top: confirmPop.y }}>
-          <p>버블을 터뜨릴까요?</p>
+          <p>{t("confirm.pop")}</p>
           <div className="group-confirm-actions">
             <button className="gc-btn yes" autoFocus onClick={() => { popBubble(confirmPop.id); setConfirmPop(null); }}>
-              네!
+              {t("confirm.popYes")}
             </button>
             <button className="gc-btn no" onClick={() => setConfirmPop(null)}>
-              아니요
+              {t("confirm.popNo")}
             </button>
           </div>
         </div>
@@ -971,13 +1109,13 @@ export default function BubbleCanvas({
       {/* Group complete confirm popup */}
       {confirmGroup && (
         <div className="group-confirm" style={{ left: confirmGroup.x, top: confirmGroup.y }}>
-          <p>프로젝트 전체를 완료할까요?</p>
+          <p>{t("confirm.groupPop")}</p>
           <div className="group-confirm-actions">
             <button className="gc-btn yes" autoFocus onClick={() => { popGroup(confirmGroup.groupId); setConfirmGroup(null); }}>
-              전체 완료!
+              {t("confirm.groupPopYes")}
             </button>
             <button className="gc-btn no" onClick={() => setConfirmGroup(null)}>
-              아니요
+              {t("confirm.popNo")}
             </button>
           </div>
         </div>
@@ -986,13 +1124,13 @@ export default function BubbleCanvas({
       {/* Ungroup confirm popup */}
       {confirmUngroup && (
         <div className="group-confirm" style={{ left: confirmUngroup.x, top: confirmUngroup.y }}>
-          <p>그룹에서 분리할까요?</p>
+          <p>{t("confirm.ungroup")}</p>
           <div className="group-confirm-actions">
             <button className="gc-btn yes" autoFocus onClick={() => { onUngroup(confirmUngroup.id); setConfirmUngroup(null); }}>
-              분리하기
+              {t("confirm.ungroupYes")}
             </button>
             <button className="gc-btn no" onClick={() => setConfirmUngroup(null)}>
-              아니요
+              {t("confirm.popNo")}
             </button>
           </div>
         </div>
@@ -1001,25 +1139,25 @@ export default function BubbleCanvas({
       {/* Multi-select action bar */}
       {selectedBubbleIds.length > 0 && multiActionPos && (
         <div className="multi-select-bar" style={{ left: multiActionPos.x, top: multiActionPos.y }}>
-          <span className="msb-count">{selectedBubbleIds.length}개 선택</span>
+          <span className="msb-count">{t("multi.selected", { n: selectedBubbleIds.length })}</span>
           {onCompleteMultiple && (
             <button className="msb-btn" onClick={() => { onCompleteMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
-              완료
+              {t("multi.complete")}
             </button>
           )}
           {onGroupMultiple && selectedBubbleIds.length > 1 && (
             <button className="msb-btn" onClick={() => { onGroupMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
-              그룹화
+              {t("multi.group")}
             </button>
           )}
           {onDuplicateMultiple && (
             <button className="msb-btn" onClick={() => { onDuplicateMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
-              복제
+              {t("multi.duplicate")}
             </button>
           )}
           {onDeleteMultiple && (
             <button className="msb-btn danger" onClick={() => { onDeleteMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
-              삭제
+              {t("multi.delete")}
             </button>
           )}
           <button className="msb-btn cancel" onClick={() => { setSelectedBubbleIds([]); setMultiActionPos(null); }}>

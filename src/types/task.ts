@@ -14,6 +14,7 @@ export interface Task {
   ownerId?: string;
   color?: string;
   categoryId?: string;
+  timerEnd?: number; // timestamp when timer expires
 }
 
 export interface Category {

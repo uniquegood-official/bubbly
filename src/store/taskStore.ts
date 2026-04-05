@@ -15,11 +15,20 @@ function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
+const MAX_HISTORY = 50;
+
 interface Store {
   tasks: Task[];
   categories: Category[];
   focusedTaskId: string | null;
-  selectedCategoryId: string | null; // null = "전체", "today", "upcoming", or category id
+  selectedCategoryId: string | null;
+  _history: Task[][];
+  _future: Task[][];
+  _pushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
   addTask: (title: string, priority?: Priority, dueDate?: string, estimatedMinutes?: number, categoryId?: string) => void;
   addSubTask: (parentId: string, title: string) => string;
   addSubTaskWithColor: (parentId: string, title: string, color: string) => string;
@@ -29,7 +38,7 @@ interface Store {
   completeGroup: (groupId: string) => void;
   reactivateTask: (id: string) => void;
   setFocus: (id: string | null) => void;
-  updateTask: (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate" | "color" | "categoryId">>) => void;
+  updateTask: (id: string, updates: Partial<Pick<Task, "title" | "memo" | "priority" | "estimatedMinutes" | "dueDate" | "color" | "categoryId" | "timerEnd">>) => void;
   groupTasks: (taskId1: string, taskId2: string) => void;
   ungroupTask: (taskId: string) => void;
   addCategory: (name: string, icon?: string) => string;
@@ -48,8 +57,43 @@ export const useStore = create<Store>()(
       categories: [],
       focusedTaskId: null,
       selectedCategoryId: null,
+      _history: [],
+      _future: [],
+
+      _pushHistory: () => {
+        const { tasks, _history } = get();
+        const newHistory = [..._history, tasks.map((t) => ({ ...t }))];
+        if (newHistory.length > MAX_HISTORY) newHistory.shift();
+        set({ _history: newHistory, _future: [] });
+      },
+
+      undo: () => {
+        const { tasks, _history, _future } = get();
+        if (_history.length === 0) return;
+        const prev = _history[_history.length - 1];
+        set({
+          tasks: prev,
+          _history: _history.slice(0, -1),
+          _future: [..._future, tasks.map((t) => ({ ...t }))],
+        });
+      },
+
+      redo: () => {
+        const { tasks, _history, _future } = get();
+        if (_future.length === 0) return;
+        const next = _future[_future.length - 1];
+        set({
+          tasks: next,
+          _history: [..._history, tasks.map((t) => ({ ...t }))],
+          _future: _future.slice(0, -1),
+        });
+      },
+
+      canUndo: () => get()._history.length > 0,
+      canRedo: () => get()._future.length > 0,
 
       addTask: (title, priority = 3, dueDate, estimatedMinutes, categoryId) => {
+        get()._pushHistory();
         const state = get();
         const cat = categoryId ?? (state.selectedCategoryId && state.selectedCategoryId !== "today" && state.selectedCategoryId !== "upcoming" ? state.selectedCategoryId : undefined);
         const task: Task = {
@@ -66,6 +110,7 @@ export const useStore = create<Store>()(
       },
 
       addSubTask: (parentId, title) => {
+        get()._pushHistory();
         const state = get();
         const parent = state.tasks.find((t) => t.id === parentId);
         if (!parent) return "";
@@ -90,6 +135,7 @@ export const useStore = create<Store>()(
       },
 
       addSubTaskWithColor: (parentId, title, color) => {
+        get()._pushHistory();
         const state = get();
         const parent = state.tasks.find((t) => t.id === parentId);
         if (!parent) return "";
@@ -113,6 +159,7 @@ export const useStore = create<Store>()(
       },
 
       duplicateTasks: (ids) => {
+        get()._pushHistory();
         const state = get();
         const sourceTasks = ids.map((id) => state.tasks.find((t) => t.id === id)).filter(Boolean) as Task[];
         if (sourceTasks.length === 0) return;
@@ -147,34 +194,42 @@ export const useStore = create<Store>()(
         set((s) => ({ tasks: [...s.tasks, ...finalTasks] }));
       },
 
-      removeTask: (id) =>
+      removeTask: (id) => {
+        get()._pushHistory();
         set((s) => ({
           tasks: s.tasks.filter((t) => t.id !== id),
           focusedTaskId: s.focusedTaskId === id ? null : s.focusedTaskId,
-        })),
+        }));
+      },
 
-      completeTask: (id) =>
+      completeTask: (id) => {
+        get()._pushHistory();
         set((s) => ({
           tasks: s.tasks.map((t) =>
             t.id === id ? { ...t, completed: true, completedAt: Date.now() } : t
           ),
           focusedTaskId: s.focusedTaskId === id ? null : s.focusedTaskId,
-        })),
+        }));
+      },
 
-      completeGroup: (groupId) =>
+      completeGroup: (groupId) => {
+        get()._pushHistory();
         set((s) => ({
           tasks: s.tasks.map((t) =>
             t.groupId === groupId ? { ...t, completed: true, completedAt: Date.now() } : t
           ),
           focusedTaskId: null,
-        })),
+        }));
+      },
 
-      reactivateTask: (id) =>
+      reactivateTask: (id) => {
+        get()._pushHistory();
         set((s) => ({
           tasks: s.tasks.map((t) =>
             t.id === id ? { ...t, completed: false, completedAt: undefined } : t
           ),
-        })),
+        }));
+      },
 
       setFocus: (id) => set({ focusedTaskId: id }),
 
@@ -184,6 +239,7 @@ export const useStore = create<Store>()(
         })),
 
       groupTasks: (taskId1, taskId2) => {
+        get()._pushHistory();
         const state = get();
         const t1 = state.tasks.find((t) => t.id === taskId1);
         const t2 = state.tasks.find((t) => t.id === taskId2);
@@ -199,14 +255,16 @@ export const useStore = create<Store>()(
         }));
       },
 
-      ungroupTask: (taskId) =>
+      ungroupTask: (taskId) => {
+        get()._pushHistory();
         set((s) => ({
           tasks: s.tasks.map((t) => {
             if (t.id !== taskId) return t;
             const { groupId: _, ...rest } = t;
             return rest as Task;
           }),
-        })),
+        }));
+      },
 
       addCategory: (name, icon) => {
         const id = genId();
@@ -232,6 +290,12 @@ export const useStore = create<Store>()(
       getCompletedTasks: () => get().tasks.filter((t) => t.completed),
       getGroupTasks: (groupId) => get().tasks.filter((t) => t.groupId === groupId && !t.completed),
     }),
-    { name: "roullette-bubbles" }
+    {
+      name: "roullette-bubbles",
+      partialize: (state) => {
+        const { _history, _future, ...rest } = state;
+        return rest;
+      },
+    }
   )
 );
