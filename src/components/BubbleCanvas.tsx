@@ -6,7 +6,6 @@ const PRIORITY_RADIUS: Record<number, number> = {
   1: 30, 2: 40, 3: 52, 4: 66, 5: 82,
 };
 
-// [bubble fill light, bubble fill dark, text color]
 const PRIORITY_COLORS: Record<number, [string, string, string]> = {
   1: ["#d0dce5", "#9badb8", "#3a4a54"],
   2: ["#8ae0d4", "#3c9e90", "#1a4a44"],
@@ -36,8 +35,8 @@ interface Bubble {
 }
 
 interface Props {
-  tasks: Task[];       // filtered tasks to render
-  allTasks: Task[];    // all active tasks for position persistence
+  tasks: Task[];
+  allTasks: Task[];
   focusedId: string | null;
   onSelect: (id: string) => void;
   onComplete: (id: string) => void;
@@ -47,6 +46,10 @@ interface Props {
   onEmptyClick?: (x: number, y: number) => void;
   onAddSub?: (id: string) => void;
   onAiGenerate?: (id: string) => void;
+  onDeleteMultiple?: (ids: string[]) => void;
+  onCompleteMultiple?: (ids: string[]) => void;
+  onGroupMultiple?: (ids: string[]) => void;
+  onDuplicateMultiple?: (ids: string[]) => void;
 }
 
 function isUrgent(task: Task): boolean {
@@ -60,18 +63,31 @@ function isOverdue(task: Task): boolean {
   return new Date(task.dueDate).getTime() < Date.now();
 }
 
-export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup, onEmptyClick, onAddSub, onAiGenerate }: Props) {
+export default function BubbleCanvas({
+  tasks, allTasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup,
+  onEmptyClick, onAddSub, onAiGenerate,
+  onDeleteMultiple, onCompleteMultiple, onGroupMultiple, onDuplicateMultiple,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bubblesRef = useRef<Bubble[]>([]);
   const animRef = useRef<number>(0);
   const mouseRef = useRef<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ bubbleId: string; offsetX: number; offsetY: number; startX: number; startY: number } | null>(null);
   const hoveredRef = useRef<string | null>(null);
+  const rectSelectRef = useRef<{ sx: number; sy: number; ex: number; ey: number } | null>(null);
+  const selectedIdsRef = useRef<Set<string>>(new Set());
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [confirmGroup, setConfirmGroup] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [confirmPop, setConfirmPop] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [confirmUngroup, setConfirmUngroup] = useState<{ id: string; x: number; y: number } | null>(null);
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [floatingActions, setFloatingActions] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [selectedBubbleIds, setSelectedBubbleIds] = useState<string[]>([]);
+  const [multiActionPos, setMultiActionPos] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    selectedIdsRef.current = new Set(selectedBubbleIds);
+  }, [selectedBubbleIds]);
 
   // Build group info for center detection
   const groupCenters = useRef<Set<string>>(new Set());
@@ -93,21 +109,21 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
     groupCenters.current = centers;
   }, [tasks]);
 
-  // Visible task ids (for rendering filter)
   const visibleIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     visibleIds.current = new Set(tasks.map((t) => t.id));
   }, [tasks]);
 
-  // Sync bubbles with ALL tasks (preserves positions across category switches)
+  // Sync bubbles with ALL tasks - DPR-scaled radius
   useEffect(() => {
     const existing = bubblesRef.current;
+    const dpr = window.devicePixelRatio || 1;
     const newBubbles: Bubble[] = allTasks.map((task) => {
       const found = existing.find((b) => b.id === task.id);
 
       const isCenter = groupCenters.current.has(task.id);
-      const baseR = PRIORITY_RADIUS[task.priority];
-      const targetR = isCenter ? Math.max(baseR, 90) : baseR;
+      const baseR = PRIORITY_RADIUS[task.priority] * dpr;
+      const targetR = isCenter ? Math.max(baseR, 90 * dpr) : baseR;
 
       if (found) {
         found.task = task;
@@ -115,9 +131,8 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         return found;
       }
 
-      // New bubble: place near parent if it has a group
-      let startX = targetR + Math.random() * Math.max(100, size.w * (window.devicePixelRatio || 1) - targetR * 3);
-      let startY = targetR + Math.random() * Math.max(100, size.h * (window.devicePixelRatio || 1) - targetR * 3);
+      let startX = targetR + Math.random() * Math.max(100, size.w * dpr - targetR * 3);
+      let startY = targetR + Math.random() * Math.max(100, size.h * dpr - targetR * 3);
 
       if (task.groupId) {
         const parent = existing.find((b) => b.task.groupId === task.groupId);
@@ -183,16 +198,15 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
     [onCompleteGroup]
   );
 
-  // Double-click detection
   const lastClickRef = useRef<{ id: string; time: number } | null>(null);
 
-  // Mouse/drag/scroll handlers
+  // Mouse/touch/drag handlers
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
 
-    const getPos = (e: MouseEvent) => {
+    const getPos = (e: MouseEvent | Touch) => {
       const rect = canvas.getBoundingClientRect();
       return { x: (e.clientX - rect.left) * dpr, y: (e.clientY - rect.top) * dpr };
     };
@@ -212,8 +226,13 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
       const { x, y } = getPos(e);
       const hit = findBubble(x, y);
       if (hit) {
+        setSelectedBubbleIds([]);
+        setMultiActionPos(null);
         dragRef.current = { bubbleId: hit.id, offsetX: x - hit.x, offsetY: y - hit.y, startX: hit.x, startY: hit.y };
         canvas.style.cursor = "grabbing";
+      } else {
+        // Start rect selection on empty canvas
+        rectSelectRef.current = { sx: x, sy: y, ex: x, ey: y };
       }
     };
 
@@ -222,6 +241,16 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
     const handleMouseMove = (e: MouseEvent) => {
       const { x, y } = getPos(e);
       mouseRef.current = { x, y };
+
+      // Rect selection mode
+      if (rectSelectRef.current) {
+        rectSelectRef.current.ex = x;
+        rectSelectRef.current.ey = y;
+        canvas.style.cursor = "crosshair";
+        setTooltip(null);
+        hoveredRef.current = null;
+        return;
+      }
 
       if (dragRef.current) {
         const b = bubblesRef.current.find((b) => b.id === dragRef.current!.bubbleId);
@@ -240,7 +269,6 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
       const hovering = findBubble(x, y);
       canvas.style.cursor = hovering ? "grab" : "default";
 
-      // Tooltip logic
       if (hovering) {
         if (hoveredRef.current !== hovering.id) {
           hoveredRef.current = hovering.id;
@@ -266,6 +294,33 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
     };
 
     const handleMouseUp = (_e: MouseEvent) => {
+      // Rect selection end
+      if (rectSelectRef.current) {
+        const rs = rectSelectRef.current;
+        const minX = Math.min(rs.sx, rs.ex);
+        const maxX = Math.max(rs.sx, rs.ex);
+        const minY = Math.min(rs.sy, rs.ey);
+        const maxY = Math.max(rs.sy, rs.ey);
+        rectSelectRef.current = null;
+        canvas.style.cursor = "default";
+        if (maxX - minX > 10 || maxY - minY > 10) {
+          const visible = visibleIds.current;
+          const inRect = bubblesRef.current.filter(
+            (b) => !b.popping && visible.has(b.id) &&
+              b.x >= minX && b.x <= maxX && b.y >= minY && b.y <= maxY
+          );
+          if (inRect.length > 0) {
+            setSelectedBubbleIds(inRect.map((b) => b.id));
+            const rect2 = canvas.getBoundingClientRect();
+            const avgX = inRect.reduce((s, b) => s + b.x, 0) / inRect.length;
+            const topY = Math.min(...inRect.map((b) => b.y - b.r));
+            setMultiActionPos({ x: avgX / dpr + rect2.left, y: topY / dpr + rect2.top - 12 });
+            return;
+          }
+        }
+        return;
+      }
+
       const drag = dragRef.current;
       if (!drag) return;
       dragRef.current = null;
@@ -287,8 +342,8 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         if (isDoubleClick) {
           lastClickRef.current = null;
           const rect = canvasRef.current!.getBoundingClientRect();
-          const screenX = b.x / (window.devicePixelRatio || 1) + rect.left;
-          const screenY = b.y / (window.devicePixelRatio || 1) + rect.top;
+          const screenX = b.x / dpr + rect.left;
+          const screenY = b.y / dpr + rect.top;
           if (b.task.groupId && groupCenters.current.has(b.id)) {
             setConfirmGroup({ groupId: b.task.groupId!, x: screenX, y: screenY });
           } else {
@@ -297,17 +352,18 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
           return;
         }
 
-        // Single click → select + show floating actions
+        // Single click -> select + floating actions
         onSelect(b.id);
         const rect = canvasRef.current!.getBoundingClientRect();
         setFloatingActions({
           id: b.id,
-          x: b.x / (window.devicePixelRatio || 1) + rect.left,
-          y: (b.y - b.r) / (window.devicePixelRatio || 1) + rect.top - 12,
+          x: b.x / dpr + rect.left,
+          y: (b.y - b.r) / dpr + rect.top - 12,
         });
         return;
       }
 
+      // Check snap to another bubble -> group
       for (const other of bubblesRef.current) {
         if (other.id === b.id || other.popping) continue;
         const dx = b.x - other.x;
@@ -319,6 +375,7 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         }
       }
 
+      // Check ungroup - dragged far from group -> show confirmation
       if (b.task.groupId) {
         const groupBubbles = bubblesRef.current.filter(
           (ob) => ob.task.groupId === b.task.groupId && ob.id !== b.id && !ob.popping
@@ -328,10 +385,8 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
           const cy = groupBubbles.reduce((s, ob) => s + ob.y, 0) / groupBubbles.length;
           const distFromGroup = Math.sqrt((b.x - cx) ** 2 + (b.y - cy) ** 2);
           if (distFromGroup > 300) {
-            const angle = Math.atan2(b.y - cy, b.x - cx);
-            b.vx = Math.cos(angle) * 4;
-            b.vy = Math.sin(angle) * 4;
-            onUngroup(b.id);
+            const rect2 = canvasRef.current!.getBoundingClientRect();
+            setConfirmUngroup({ id: b.id, x: b.x / dpr + rect2.left, y: b.y / dpr + rect2.top });
             return;
           }
         }
@@ -346,14 +401,16 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         onSelect("");
         setConfirmGroup(null);
         setConfirmPop(null);
+        setConfirmUngroup(null);
         setFloatingActions(null);
+        setSelectedBubbleIds([]);
+        setMultiActionPos(null);
       }
     };
 
     const handleDblClick = (e: MouseEvent) => {
       const { x, y } = getPos(e);
       const hit = findBubble(x, y);
-      // Only fire on empty area — bubble double-click is handled in handleMouseUp
       if (!hit && onEmptyClick) {
         const rect = canvas.getBoundingClientRect();
         onEmptyClick(
@@ -366,6 +423,7 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
     const handleMouseLeave = () => {
       mouseRef.current = null;
       dragRef.current = null;
+      rectSelectRef.current = null;
       hoveredRef.current = null;
       setTooltip(null);
       if (hoverTimer) clearTimeout(hoverTimer);
@@ -377,8 +435,77 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
       if (hit) {
         e.preventDefault();
         const delta = e.deltaY > 0 ? -4 : 4;
-        hit.r = Math.max(20, Math.min(120, hit.r + delta));
+        hit.r = Math.max(20, Math.min(120 * dpr, hit.r + delta));
       }
+    };
+
+    // Touch support
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const pos = getPos(e.touches[0]);
+      mouseRef.current = pos;
+      const hit = findBubble(pos.x, pos.y);
+      if (hit) {
+        dragRef.current = { bubbleId: hit.id, offsetX: pos.x - hit.x, offsetY: pos.y - hit.y, startX: hit.x, startY: hit.y };
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const pos = getPos(e.touches[0]);
+      mouseRef.current = pos;
+      if (dragRef.current) {
+        const b = bubblesRef.current.find((b) => b.id === dragRef.current!.bubbleId);
+        if (b) { b.x = pos.x - dragRef.current.offsetX; b.y = pos.y - dragRef.current.offsetY; b.vx = 0; b.vy = 0; }
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      const drag = dragRef.current;
+      if (!drag) return;
+      dragRef.current = null;
+      const b = bubblesRef.current.find((b) => b.id === drag.bubbleId);
+      if (!b) { mouseRef.current = null; return; }
+      const totalMoved = Math.sqrt((b.x - drag.startX) ** 2 + (b.y - drag.startY) ** 2);
+      if (totalMoved < 12) {
+        const now = Date.now();
+        const lastClick = lastClickRef.current;
+        const isDoubleClick = lastClick && lastClick.id === b.id && now - lastClick.time < 500;
+        lastClickRef.current = { id: b.id, time: now };
+        if (isDoubleClick) {
+          lastClickRef.current = null;
+          const rect2 = canvas.getBoundingClientRect();
+          const screenX = b.x / dpr + rect2.left;
+          const screenY = b.y / dpr + rect2.top;
+          if (b.task.groupId && groupCenters.current.has(b.id)) {
+            setConfirmGroup({ groupId: b.task.groupId!, x: screenX, y: screenY });
+          } else {
+            setConfirmPop({ id: b.id, x: screenX, y: screenY });
+          }
+          mouseRef.current = null;
+          return;
+        }
+        onSelect(b.id);
+        const rect2 = canvas.getBoundingClientRect();
+        setFloatingActions({ id: b.id, x: b.x / dpr + rect2.left, y: (b.y - b.r) / dpr + rect2.top - 12 });
+      } else {
+        // Check snap to group on touch drag
+        for (const other of bubblesRef.current) {
+          if (other.id === b.id || other.popping) continue;
+          const dx = b.x - other.x;
+          const dy = b.y - other.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < b.r + other.r + 15) {
+            onGroup(b.id, other.id);
+            mouseRef.current = null;
+            return;
+          }
+        }
+      }
+      mouseRef.current = null;
     };
 
     canvas.addEventListener("mousedown", handleMouseDown);
@@ -388,6 +515,9 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
     canvas.addEventListener("dblclick", handleDblClick);
     canvas.addEventListener("mouseleave", handleMouseLeave);
     canvas.addEventListener("wheel", handleWheel, { passive: false });
+    canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+    canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
+    canvas.addEventListener("touchend", handleTouchEnd, { passive: false });
     return () => {
       canvas.removeEventListener("mousedown", handleMouseDown);
       canvas.removeEventListener("mousemove", handleMouseMove);
@@ -396,6 +526,9 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
       canvas.removeEventListener("dblclick", handleDblClick);
       canvas.removeEventListener("mouseleave", handleMouseLeave);
       canvas.removeEventListener("wheel", handleWheel);
+      canvas.removeEventListener("touchstart", handleTouchStart);
+      canvas.removeEventListener("touchmove", handleTouchMove);
+      canvas.removeEventListener("touchend", handleTouchEnd);
       if (hoverTimer) clearTimeout(hoverTimer);
     };
   }, [focusedId, onSelect, onGroup, onUngroup, popBubble, onEmptyClick]);
@@ -446,7 +579,6 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
 
         const inGroup = b.task.groupId && groups[b.task.groupId] && groups[b.task.groupId].length > 1;
 
-        // Mouse hover → slow down
         if (mouseRef.current) {
           const dx = b.x - mouseRef.current.x;
           const dy = b.y - mouseRef.current.y;
@@ -457,7 +589,6 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
           }
         }
 
-        // Spring force toward group center
         if (inGroup) {
           const group = groups[b.task.groupId!];
           const cx = group.reduce((s, ob) => s + ob.x, 0) / group.length;
@@ -473,7 +604,6 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
           }
         }
 
-        // Bubble-bubble collision
         for (const other of bubbles) {
           if (other.id === b.id || other.popping) continue;
           const isDraggedOther = isDragging && dragRef.current!.bubbleId === other.id;
@@ -490,13 +620,11 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
             const nx = dx / dist;
             const ny = dy / dist;
             const overlap = minDist - dist;
-            // Position correction only — minimal velocity injection
             const pushForce = sameGroup ? 0.3 : 0.5;
             b.x += nx * overlap * pushForce;
             b.y += ny * overlap * pushForce;
             other.x -= nx * overlap * pushForce;
             other.y -= ny * overlap * pushForce;
-            // Very small bounce
             const bounce = sameGroup ? 0.02 : 0.08;
             b.vx += nx * bounce;
             b.vy += ny * bounce;
@@ -505,25 +633,21 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
           }
         }
 
-        // Wall bounce
         const pad = 4;
         if (b.x - b.r < pad) { b.x = b.r + pad; b.vx = Math.abs(b.vx) * 0.3; }
         if (b.x + b.r > W - pad) { b.x = W - b.r - pad; b.vx = -Math.abs(b.vx) * 0.3; }
         if (b.y - b.r < pad) { b.y = b.r + pad; b.vy = Math.abs(b.vy) * 0.3; }
         if (b.y + b.r > H - pad) { b.y = H - b.r - pad; b.vy = -Math.abs(b.vy) * 0.3; }
 
-        // Float drift (solo bubbles only)
         if (!inGroup) {
           b.vx += (Math.random() - 0.5) * 0.04;
           b.vy += (Math.random() - 0.5) * 0.04;
         }
 
-        // Damping
         const damp = inGroup ? 0.9 : 0.985;
         b.vx *= damp;
         b.vy *= damp;
 
-        // Velocity clamp
         const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
         if (speed > MAX_SPEED) {
           b.vx = (b.vx / speed) * MAX_SPEED;
@@ -534,7 +658,7 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         b.y += b.vy;
       }
 
-      // Draw group connections (behind bubbles)
+      // Draw group connections
       for (const gid of Object.keys(groups)) {
         const group = groups[gid];
         if (group.length < 2) continue;
@@ -605,6 +729,7 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         const urgent = isUrgent(b.task);
         const overdue = isOverdue(b.task);
         const [colorLight, colorDark, colorText] = getColors(b.task);
+        const isSelected = selectedIdsRef.current.has(b.id);
 
         let isGroupCenter = false;
         if (b.task.groupId && groups[b.task.groupId] && groups[b.task.groupId].length > 1) {
@@ -643,6 +768,17 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         ctx.globalAlpha = dimmed ? 0.2 : 1;
         const wobble = Math.sin(time * 0.025 + b.x * 0.008) * 2.5;
 
+        // Selected highlight (multi-select)
+        if (isSelected) {
+          ctx.beginPath();
+          ctx.arc(b.x, b.y + wobble, b.r + 6 * dpr, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(100, 90, 200, 0.7)";
+          ctx.lineWidth = 2.5 * dpr;
+          ctx.setLineDash([4 * dpr, 3 * dpr]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
         // Glow
         if (isFocused || urgent || overdue || isGroupCenter) {
           const glowColor = overdue ? "#f87171" : urgent ? "#fbbf24" : isGroupCenter ? "#a78bfa" : colorLight;
@@ -658,7 +794,7 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
           ctx.globalAlpha = dimmed ? 0.2 : 1;
         }
 
-        // Ambient shadow
+        // Shadow
         ctx.beginPath();
         ctx.arc(b.x, b.y + wobble + 6, b.r + 2, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(129, 81, 99, 0.08)";
@@ -677,14 +813,14 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         ctx.fillStyle = grad;
         ctx.fill();
 
-        // Ghost border
+        // Border
         ctx.beginPath();
         ctx.arc(b.x, b.y + wobble, b.r, 0, Math.PI * 2);
         ctx.strokeStyle = isFocused ? "rgba(129, 81, 99, 0.3)" : isGroupCenter ? "rgba(100, 90, 122, 0.2)" : "rgba(169, 179, 186, 0.15)";
         ctx.lineWidth = isFocused ? 2 : isGroupCenter ? 1.5 : 0.5;
         ctx.stroke();
 
-        // White inner glow
+        // Inner glow
         ctx.save();
         ctx.beginPath();
         ctx.ellipse(b.x - b.r * 0.15, b.y - b.r * 0.38 + wobble, b.r * 0.4, b.r * 0.2, -0.3, 0, Math.PI * 2);
@@ -696,7 +832,6 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         ctx.font = `600 ${Math.max(11, b.r * 0.26)}px "Plus Jakarta Sans", -apple-system, sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.letterSpacing = "-0.02em";
         const maxChars = Math.floor(b.r / 6.5);
         const label = b.task.title.length > maxChars
           ? b.task.title.slice(0, maxChars - 1) + "\u2026"
@@ -720,6 +855,20 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
         ctx.globalAlpha = 1;
       }
 
+      // Draw rect selection overlay
+      if (rectSelectRef.current) {
+        const { sx, sy, ex, ey } = rectSelectRef.current;
+        const rx = Math.min(sx, ex), ry = Math.min(sy, ey);
+        const rw = Math.abs(ex - sx), rh = Math.abs(ey - sy);
+        ctx.fillStyle = "rgba(100, 90, 200, 0.06)";
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.strokeStyle = "rgba(100, 90, 200, 0.5)";
+        ctx.lineWidth = 1.5 * dpr;
+        ctx.setLineDash([5 * dpr, 4 * dpr]);
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.setLineDash([]);
+      }
+
       animRef.current = requestAnimationFrame(draw);
     };
 
@@ -729,25 +878,27 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
 
   // Keyboard handler for confirm popups
   useEffect(() => {
-    if (!confirmPop && !confirmGroup) return;
+    if (!confirmPop && !confirmGroup && !confirmUngroup) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Enter") {
         if (confirmPop) { popBubble(confirmPop.id); setConfirmPop(null); }
         else if (confirmGroup) { popGroup(confirmGroup.groupId); setConfirmGroup(null); }
+        else if (confirmUngroup) { onUngroup(confirmUngroup.id); setConfirmUngroup(null); }
       } else if (e.key === "Escape") {
         setConfirmPop(null);
         setConfirmGroup(null);
+        setConfirmUngroup(null);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [confirmPop, confirmGroup, popBubble, popGroup]);
+  }, [confirmPop, confirmGroup, confirmUngroup, popBubble, popGroup, onUngroup]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <canvas
         ref={canvasRef}
-        style={{ width: size.w, height: size.h, display: "block", cursor: "default" }}
+        style={{ width: size.w, height: size.h, display: "block", cursor: "default", touchAction: "none" }}
       />
 
       {/* Floating action icons on selected bubble */}
@@ -815,6 +966,51 @@ export default function BubbleCanvas({ tasks, allTasks, focusedId, onSelect, onC
               아니요
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Ungroup confirm popup */}
+      {confirmUngroup && (
+        <div className="group-confirm" style={{ left: confirmUngroup.x, top: confirmUngroup.y }}>
+          <p>그룹에서 분리할까요?</p>
+          <div className="group-confirm-actions">
+            <button className="gc-btn yes" autoFocus onClick={() => { onUngroup(confirmUngroup.id); setConfirmUngroup(null); }}>
+              분리하기
+            </button>
+            <button className="gc-btn no" onClick={() => setConfirmUngroup(null)}>
+              아니요
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Multi-select action bar */}
+      {selectedBubbleIds.length > 0 && multiActionPos && (
+        <div className="multi-select-bar" style={{ left: multiActionPos.x, top: multiActionPos.y }}>
+          <span className="msb-count">{selectedBubbleIds.length}개 선택</span>
+          {onCompleteMultiple && (
+            <button className="msb-btn" onClick={() => { onCompleteMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
+              완료
+            </button>
+          )}
+          {onGroupMultiple && selectedBubbleIds.length > 1 && (
+            <button className="msb-btn" onClick={() => { onGroupMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
+              그룹화
+            </button>
+          )}
+          {onDuplicateMultiple && (
+            <button className="msb-btn" onClick={() => { onDuplicateMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
+              복제
+            </button>
+          )}
+          {onDeleteMultiple && (
+            <button className="msb-btn danger" onClick={() => { onDeleteMultiple(selectedBubbleIds); setSelectedBubbleIds([]); setMultiActionPos(null); }}>
+              삭제
+            </button>
+          )}
+          <button className="msb-btn cancel" onClick={() => { setSelectedBubbleIds([]); setMultiActionPos(null); }}>
+            ✕
+          </button>
         </div>
       )}
     </div>

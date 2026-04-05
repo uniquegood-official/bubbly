@@ -5,6 +5,7 @@ import { useWorkspace } from "./lib/useWorkspace";
 import { useStore } from "./store/taskStore";
 import BubbleCanvas from "./components/BubbleCanvas";
 import SpotlightAdd from "./components/SpotlightAdd";
+import SubTaskDialog from "./components/SubTaskDialog";
 import SearchBar from "./components/SearchBar";
 import AuthScreen from "./components/AuthScreen";
 import ShareButton from "./components/ShareButton";
@@ -28,6 +29,7 @@ function App() {
   const completeGroup = useOnline ? online.completeGroup : local.completeGroup;
   const groupTasks = useOnline ? online.groupTasks : local.groupTasks;
   const ungroupTask = useOnline ? online.ungroupTask : local.ungroupTask;
+  const duplicateTasks = local.duplicateTasks;
 
   // Categories (local store only for now)
   const categories = local.categories;
@@ -37,6 +39,7 @@ function App() {
   const setSelectedCategory = local.setSelectedCategory;
 
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
+  const [subDialogOpen, setSubDialogOpen] = useState(false);
   const allActive = tasks.filter((t) => !t.completed);
   const completed = tasks.filter((t) => t.completed);
 
@@ -61,12 +64,11 @@ function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [selectedCompleted, setSelectedCompleted] = useState<string | null>(null);
   const lastCompletedClick = useRef<{ id: string; time: number } | null>(null);
-  const [subBubbleInput, setSubBubbleInput] = useState("");
-  const [showSubInput, setShowSubInput] = useState(false);
   const [copied, setCopied] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showCategoryInput, setShowCategoryInput] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
 
   // Edit state
   const [editTitle, setEditTitle] = useState("");
@@ -78,7 +80,6 @@ function App() {
       setEditTitle(focusedTask.title);
       setEditMemo(focusedTask.memo || "");
       setEditMinutes(focusedTask.estimatedMinutes?.toString() || "");
-      setShowSubInput(false);
       setCopied(false);
     }
   }, [focusedTaskId]);
@@ -125,17 +126,16 @@ function App() {
     [focusedTask, updateTask]
   );
 
-  const handleAddSubBubble = useCallback(() => {
-    if (!focusedTask || !subBubbleInput.trim()) return;
-    addSubTask(focusedTask.id, subBubbleInput.trim());
-    setSubBubbleInput("");
-    setShowSubInput(false);
-  }, [focusedTask, subBubbleInput, addSubTask]);
+  const handleAddSubTask = useCallback((title: string, color: string) => {
+    if (!focusedTask) return;
+    local.addSubTaskWithColor(focusedTask.id, title, color);
+    setSubDialogOpen(false);
+  }, [focusedTask, local]);
 
-  // Canvas floating action: open sub-input for a specific bubble
+  // Canvas floating action: open sub-dialog for a specific bubble
   const handleCanvasAddSub = useCallback((id: string) => {
     setFocusedTaskId(id);
-    setShowSubInput(true);
+    setSubDialogOpen(true);
   }, []);
 
   // Canvas floating action: AI generate for a specific bubble
@@ -203,7 +203,27 @@ function App() {
     setTimeout(() => setCopied(false), 2000);
   }, [focusedGroupTasks]);
 
-  // Global shortcut: N to open spotlight
+  // Multi-select handlers for BubbleCanvas
+  const handleDeleteMultiple = useCallback((ids: string[]) => {
+    ids.forEach((id) => removeTask(id));
+  }, [removeTask]);
+
+  const handleCompleteMultiple = useCallback((ids: string[]) => {
+    ids.forEach((id) => completeTask(id));
+  }, [completeTask]);
+
+  const handleGroupMultiple = useCallback((ids: string[]) => {
+    if (ids.length < 2) return;
+    for (let i = 1; i < ids.length; i++) {
+      groupTasks(ids[0], ids[i]);
+    }
+  }, [groupTasks]);
+
+  const handleDuplicateMultiple = useCallback((ids: string[]) => {
+    duplicateTasks(ids);
+  }, [duplicateTasks]);
+
+  // Global shortcut: N to open spotlight, + to add sub or open spotlight
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -211,10 +231,18 @@ function App() {
         e.preventDefault();
         setSpotlightOpen(true);
       }
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        if (focusedTaskId) {
+          setSubDialogOpen(true);
+        } else {
+          setSpotlightOpen(true);
+        }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [focusedTaskId]);
 
   // Group completed tasks: grouped tasks together, solo tasks standalone
   // Sort groups by latest completedAt within group
@@ -290,7 +318,37 @@ function App() {
             + 새 버블 <kbd>N</kbd>
           </button>
           <SearchBar tasks={tasks} onSelect={handleSelect} onReactivate={reactivateTask} />
-          {useOnline && <ShareButton getShareLink={online.getShareLink} />}
+          {useOnline ? (
+            <ShareButton getShareLink={online.getShareLink} />
+          ) : (
+            <button
+              className="share-btn"
+              title="태스크 내용 복사"
+              onClick={() => {
+                const text = allActive.map((t) => {
+                  let line = `- ${t.title}`;
+                  if (t.estimatedMinutes) line += ` (${t.estimatedMinutes}분)`;
+                  if (t.memo) line += `\n  ${t.memo}`;
+                  return line;
+                }).join("\n");
+                navigator.clipboard.writeText(text || "버블이 없습니다");
+                setShareCopied(true);
+                setTimeout(() => setShareCopied(false), 2000);
+              }}
+            >
+              {shareCopied ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                  <polyline points="16 6 12 2 8 6" />
+                  <line x1="12" y1="2" x2="12" y2="15" />
+                </svg>
+              )}
+            </button>
+          )}
           {!timelineOpen && (
             <button
               className="timeline-toggle"
@@ -554,6 +612,10 @@ function App() {
           onEmptyClick={() => setSpotlightOpen(true)}
           onAddSub={handleCanvasAddSub}
           onAiGenerate={handleCanvasAiGenerate}
+          onDeleteMultiple={handleDeleteMultiple}
+          onCompleteMultiple={handleCompleteMultiple}
+          onGroupMultiple={handleGroupMultiple}
+          onDuplicateMultiple={handleDuplicateMultiple}
         />
       </div>
 
@@ -567,8 +629,8 @@ function App() {
                 <>
                   <button
                     className="edit-icon-btn"
-                    title="서브 버블 추가"
-                    onClick={() => setShowSubInput(!showSubInput)}
+                    title="서브 버블 추가 (+)"
+                    onClick={() => setSubDialogOpen(true)}
                   >
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="9" />
@@ -607,29 +669,23 @@ function App() {
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
                   </button>
+                  {focusedTask.groupId && focusedGroupTasks.length > 1 && (
+                    <button
+                      className="edit-icon-btn"
+                      title="그룹 복제"
+                      onClick={() => duplicateTasks(focusedGroupTasks.map((t) => t.id))}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    </button>
+                  )}
                 </>
               )}
             </div>
             <button className="edit-close" onClick={handleClosePanel}>✕</button>
           </div>
-
-          {/* Sub-bubble add input */}
-          {showSubInput && (
-            <div className="sub-bubble-input-row">
-              <input
-                type="text"
-                value={subBubbleInput}
-                onChange={(e) => setSubBubbleInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleAddSubBubble(); if (e.key === "Escape") setShowSubInput(false); }}
-                placeholder="서브 버블 이름..."
-                className="sub-bubble-input"
-                autoFocus
-              />
-              <button className="sub-bubble-add-btn" onClick={handleAddSubBubble} disabled={!subBubbleInput.trim()}>
-                추가
-              </button>
-            </div>
-          )}
 
           <div className="edit-field">
             <input
@@ -795,6 +851,16 @@ function App() {
         onClose={() => setSpotlightOpen(false)}
         onAdd={handleAdd}
       />
+
+      {/* Sub-task dialog */}
+      {focusedTask && (
+        <SubTaskDialog
+          open={subDialogOpen}
+          parentTask={focusedTask}
+          onClose={() => setSubDialogOpen(false)}
+          onAdd={handleAddSubTask}
+        />
+      )}
 
       {/* Empty state */}
       {active.length === 0 && completed.length === 0 && (

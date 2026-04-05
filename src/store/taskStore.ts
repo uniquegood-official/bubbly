@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Task, Priority, Category } from "../types/task";
+import { BUBBLE_COLORS } from "../types/task";
+
+function getNextBubbleColor(currentColor?: string): string {
+  const nonDefault = BUBBLE_COLORS.filter((c) => c.id !== "default");
+  if (!currentColor || currentColor === "default") return nonDefault[0].id;
+  const idx = nonDefault.findIndex((c) => c.id === currentColor);
+  if (idx === -1 || idx === nonDefault.length - 1) return nonDefault[0].id;
+  return nonDefault[idx + 1].id;
+}
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -13,6 +22,8 @@ interface Store {
   selectedCategoryId: string | null; // null = "전체", "today", "upcoming", or category id
   addTask: (title: string, priority?: Priority, dueDate?: string, estimatedMinutes?: number, categoryId?: string) => void;
   addSubTask: (parentId: string, title: string) => string;
+  addSubTaskWithColor: (parentId: string, title: string, color: string) => string;
+  duplicateTasks: (ids: string[]) => void;
   removeTask: (id: string) => void;
   completeTask: (id: string) => void;
   completeGroup: (groupId: string) => void;
@@ -59,6 +70,7 @@ export const useStore = create<Store>()(
         const parent = state.tasks.find((t) => t.id === parentId);
         if (!parent) return "";
         const gid = parent.groupId || genId();
+        const nextColor = getNextBubbleColor(parent.color);
         const subTask: Task = {
           id: genId(),
           title,
@@ -66,7 +78,7 @@ export const useStore = create<Store>()(
           completed: false,
           createdAt: Date.now(),
           groupId: gid,
-          color: parent.color,
+          color: nextColor,
           categoryId: parent.categoryId,
         };
         set((s) => ({
@@ -75,6 +87,64 @@ export const useStore = create<Store>()(
           ).concat(subTask),
         }));
         return subTask.id;
+      },
+
+      addSubTaskWithColor: (parentId, title, color) => {
+        const state = get();
+        const parent = state.tasks.find((t) => t.id === parentId);
+        if (!parent) return "";
+        const gid = parent.groupId || genId();
+        const subTask: Task = {
+          id: genId(),
+          title,
+          priority: parent.priority,
+          completed: false,
+          createdAt: Date.now(),
+          groupId: gid,
+          color,
+          categoryId: parent.categoryId,
+        };
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === parentId ? { ...t, groupId: gid } : t
+          ).concat(subTask),
+        }));
+        return subTask.id;
+      },
+
+      duplicateTasks: (ids) => {
+        const state = get();
+        const sourceTasks = ids.map((id) => state.tasks.find((t) => t.id === id)).filter(Boolean) as Task[];
+        if (sourceTasks.length === 0) return;
+        // Determine if all share same groupId
+        const groupIds = new Set(sourceTasks.map((t) => t.groupId).filter(Boolean));
+        const sharedGroupId = groupIds.size === 1 ? [...groupIds][0] : undefined;
+        const newGroupId = sharedGroupId ? genId() : undefined;
+        const newTasks: Task[] = sourceTasks.map((t) => ({
+          ...t,
+          id: genId(),
+          createdAt: Date.now(),
+          completed: false,
+          completedAt: undefined,
+          groupId: newGroupId ?? (t.groupId ? genId() : undefined),
+        }));
+        // If they didn't share a group, each duplicate gets its own new groupId (or none)
+        // Actually: only create group if source tasks shared a groupId
+        const finalTasks: Task[] = sharedGroupId
+          ? newTasks.map((t) => ({ ...t, groupId: newGroupId }))
+          : newTasks.map((t, i) => {
+              const src = sourceTasks[i];
+              if (src.groupId) {
+                // find if another duplicate shares this groupId
+                const siblings = sourceTasks.filter((s) => s.groupId === src.groupId);
+                if (siblings.length > 1) {
+                  // they form their own sub-group within this duplication
+                  return t;
+                }
+              }
+              return { ...t, groupId: undefined };
+            });
+        set((s) => ({ tasks: [...s.tasks, ...finalTasks] }));
       },
 
       removeTask: (id) =>
