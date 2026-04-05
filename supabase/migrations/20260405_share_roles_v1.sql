@@ -1,34 +1,39 @@
--- Bubbly Supabase Schema
+-- Bubbly migration: mobile/share v1
+-- Apply this to an existing Supabase project that was created from the older schema.
+-- This migration is written to be re-runnable where practical.
 
--- Users profile (extends Supabase auth.users)
-create table public.profiles (
-  id uuid references auth.users on delete cascade primary key,
-  display_name text,
-  avatar_url text,
-  color text default '#7b5fcf',
-  created_at timestamptz default now()
-);
+create extension if not exists pgcrypto;
 
--- Workspaces (shareable boards)
-create table public.workspaces (
-  id uuid default gen_random_uuid() primary key,
-  name text not null default 'My Board',
-  owner_id uuid references public.profiles(id) on delete cascade not null,
-  invite_code text unique default encode(gen_random_bytes(6), 'hex'),
-  created_at timestamptz default now()
-);
+-- 1. Expand task model
+alter table public.tasks
+  add column if not exists color text;
 
--- Workspace members
-create table public.workspace_members (
-  workspace_id uuid references public.workspaces(id) on delete cascade,
-  user_id uuid references public.profiles(id) on delete cascade,
-  role text default 'viewer' check (role in ('owner', 'editor', 'viewer')),
-  joined_at timestamptz default now(),
-  primary key (workspace_id, user_id)
-);
+-- 2. Upgrade workspace roles
+update public.workspace_members
+set role = 'editor'
+where role = 'member';
 
--- Share links
-create table public.workspace_share_links (
+alter table public.workspace_members
+  alter column role set default 'viewer';
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'workspace_members_role_check'
+      and conrelid = 'public.workspace_members'::regclass
+  ) then
+    alter table public.workspace_members drop constraint workspace_members_role_check;
+  end if;
+end $$;
+
+alter table public.workspace_members
+  add constraint workspace_members_role_check
+  check (role in ('owner', 'editor', 'viewer'));
+
+-- 3. Share links table
+create table if not exists public.workspace_share_links (
   id uuid default gen_random_uuid() primary key,
   workspace_id uuid references public.workspaces(id) on delete cascade not null,
   role text not null check (role in ('viewer', 'editor')),
@@ -39,23 +44,9 @@ create table public.workspace_share_links (
   created_at timestamptz default now()
 );
 
--- Tasks (bubbles)
-create table public.tasks (
-  id uuid default gen_random_uuid() primary key,
-  workspace_id uuid references public.workspaces(id) on delete cascade not null,
-  owner_id uuid references public.profiles(id) on delete set null,
-  title text not null,
-  priority smallint default 3 check (priority between 1 and 5),
-  memo text,
-  estimated_minutes int,
-  due_date date,
-  completed boolean default false,
-  completed_at timestamptz,
-  group_id uuid,
-  color text,
-  created_at timestamptz default now()
-);
+alter table public.workspace_share_links enable row level security;
 
+-- 4. Helper + redeem/create RPCs
 create or replace function public.workspace_role_rank(role_input text)
 returns integer as $$
 begin
@@ -67,40 +58,6 @@ begin
   end;
 end;
 $$ language plpgsql immutable;
-
--- Auto-create profile on signup
-create or replace function public.handle_new_user()
-returns trigger as $$
-begin
-  insert into public.profiles (id, display_name, avatar_url)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
-    coalesce(new.raw_user_meta_data->>'avatar_url', new.raw_user_meta_data->>'picture')
-  );
-  return new;
-end;
-$$ language plpgsql security definer;
-
-create or replace trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
-
--- Auto-create default workspace on profile creation
-create or replace function public.handle_new_profile()
-returns trigger as $$
-declare
-  ws_id uuid;
-begin
-  insert into public.workspaces (name, owner_id) values ('My Board', new.id) returning id into ws_id;
-  insert into public.workspace_members (workspace_id, user_id, role) values (ws_id, new.id, 'owner');
-  return new;
-end;
-$$ language plpgsql security definer;
-
-create or replace trigger on_profile_created
-  after insert on public.profiles
-  for each row execute function public.handle_new_profile();
 
 create or replace function public.join_workspace_by_invite(invite_code_input text)
 returns uuid
@@ -255,18 +212,11 @@ grant execute on function public.join_workspace_by_invite(text) to authenticated
 grant execute on function public.ensure_workspace_share_link(uuid, text, boolean) to authenticated;
 grant execute on function public.redeem_workspace_share_link(text) to authenticated;
 
--- RLS Policies
-alter table public.profiles enable row level security;
-alter table public.workspaces enable row level security;
-alter table public.workspace_members enable row level security;
-alter table public.workspace_share_links enable row level security;
-alter table public.tasks enable row level security;
+-- 5. Refresh RLS policies
+drop policy if exists "Workspaces viewable by members" on public.workspaces;
+drop policy if exists "Workspace owner can update" on public.workspaces;
+drop policy if exists "Anyone can create workspace" on public.workspaces;
 
--- Profiles: read any, update own
-create policy "Profiles are viewable by everyone" on public.profiles for select using (true);
-create policy "Users can update own profile" on public.profiles for update using (auth.uid() = id);
-
--- Workspaces: viewable if member
 create policy "Workspaces viewable by members" on public.workspaces for select
   using (
     exists (
@@ -276,12 +226,20 @@ create policy "Workspaces viewable by members" on public.workspaces for select
         and wm.user_id = auth.uid()
     )
   );
+
 create policy "Workspace owner can update" on public.workspaces for update
   using (owner_id = auth.uid());
+
 create policy "Anyone can create workspace" on public.workspaces for insert
   with check (owner_id = auth.uid());
 
--- Workspace members
+drop policy if exists "Members can view co-members" on public.workspace_members;
+drop policy if exists "Owner can manage members" on public.workspace_members;
+drop policy if exists "Members can leave" on public.workspace_members;
+drop policy if exists "Owners can add members" on public.workspace_members;
+drop policy if exists "Owners can update member roles" on public.workspace_members;
+drop policy if exists "Owners can remove members and members can leave" on public.workspace_members;
+
 create policy "Members can view co-members" on public.workspace_members for select
   using (
     exists (
@@ -291,6 +249,7 @@ create policy "Members can view co-members" on public.workspace_members for sele
         and wm.user_id = auth.uid()
     )
   );
+
 create policy "Owners can add members" on public.workspace_members for insert
   with check (
     exists (
@@ -301,6 +260,7 @@ create policy "Owners can add members" on public.workspace_members for insert
         and wm.role = 'owner'
     )
   );
+
 create policy "Owners can update member roles" on public.workspace_members for update
   using (
     exists (
@@ -320,6 +280,7 @@ create policy "Owners can update member roles" on public.workspace_members for u
         and wm.role = 'owner'
     )
   );
+
 create policy "Owners can remove members and members can leave" on public.workspace_members for delete
   using (
     user_id = auth.uid()
@@ -332,7 +293,11 @@ create policy "Owners can remove members and members can leave" on public.worksp
     )
   );
 
--- Share links
+drop policy if exists "Owners can view share links" on public.workspace_share_links;
+drop policy if exists "Owners can create share links" on public.workspace_share_links;
+drop policy if exists "Owners can update share links" on public.workspace_share_links;
+drop policy if exists "Owners can delete share links" on public.workspace_share_links;
+
 create policy "Owners can view share links" on public.workspace_share_links for select
   using (
     exists (
@@ -343,6 +308,7 @@ create policy "Owners can view share links" on public.workspace_share_links for 
         and wm.role = 'owner'
     )
   );
+
 create policy "Owners can create share links" on public.workspace_share_links for insert
   with check (
     exists (
@@ -353,6 +319,7 @@ create policy "Owners can create share links" on public.workspace_share_links fo
         and wm.role = 'owner'
     )
   );
+
 create policy "Owners can update share links" on public.workspace_share_links for update
   using (
     exists (
@@ -363,6 +330,7 @@ create policy "Owners can update share links" on public.workspace_share_links fo
         and wm.role = 'owner'
     )
   );
+
 create policy "Owners can delete share links" on public.workspace_share_links for delete
   using (
     exists (
@@ -374,7 +342,14 @@ create policy "Owners can delete share links" on public.workspace_share_links fo
     )
   );
 
--- Tasks: viewable by workspace members, editable by owners/editors
+drop policy if exists "Tasks viewable by workspace members" on public.tasks;
+drop policy if exists "Members can add tasks" on public.tasks;
+drop policy if exists "Only task owner can update" on public.tasks;
+drop policy if exists "Only task owner can delete" on public.tasks;
+drop policy if exists "Editors can add tasks" on public.tasks;
+drop policy if exists "Editors can update tasks" on public.tasks;
+drop policy if exists "Editors can delete tasks" on public.tasks;
+
 create policy "Tasks viewable by workspace members" on public.tasks for select
   using (
     exists (
@@ -384,6 +359,7 @@ create policy "Tasks viewable by workspace members" on public.tasks for select
         and wm.user_id = auth.uid()
     )
   );
+
 create policy "Editors can add tasks" on public.tasks for insert
   with check (
     owner_id = auth.uid()
@@ -395,6 +371,7 @@ create policy "Editors can add tasks" on public.tasks for insert
         and wm.role in ('owner', 'editor')
     )
   );
+
 create policy "Editors can update tasks" on public.tasks for update
   using (
     exists (
@@ -405,6 +382,7 @@ create policy "Editors can update tasks" on public.tasks for update
         and wm.role in ('owner', 'editor')
     )
   );
+
 create policy "Editors can delete tasks" on public.tasks for delete
   using (
     exists (
@@ -416,14 +394,24 @@ create policy "Editors can delete tasks" on public.tasks for delete
     )
   );
 
--- Enable realtime for tasks
-alter publication supabase_realtime add table public.tasks;
+-- 6. Realtime + indexes
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'tasks'
+  ) then
+    alter publication supabase_realtime add table public.tasks;
+  end if;
+end $$;
 
--- Indexes
-create index idx_tasks_workspace on public.tasks(workspace_id);
-create index idx_tasks_owner on public.tasks(owner_id);
-create index idx_tasks_group on public.tasks(group_id);
-create index idx_workspace_members_user on public.workspace_members(user_id);
-create index idx_workspaces_invite on public.workspaces(invite_code);
-create index idx_workspace_share_links_workspace on public.workspace_share_links(workspace_id);
-create index idx_workspace_share_links_token on public.workspace_share_links(token);
+create index if not exists idx_tasks_workspace on public.tasks(workspace_id);
+create index if not exists idx_tasks_owner on public.tasks(owner_id);
+create index if not exists idx_tasks_group on public.tasks(group_id);
+create index if not exists idx_workspace_members_user on public.workspace_members(user_id);
+create index if not exists idx_workspaces_invite on public.workspaces(invite_code);
+create index if not exists idx_workspace_share_links_workspace on public.workspace_share_links(workspace_id);
+create index if not exists idx_workspace_share_links_token on public.workspace_share_links(token);

@@ -38,6 +38,7 @@ interface Props {
   tasks: Task[];
   allTasks: Task[];
   focusedId: string | null;
+  canEdit?: boolean;
   onSelect: (id: string) => void;
   onComplete: (id: string) => void;
   onGroup: (id1: string, id2: string) => void;
@@ -64,7 +65,7 @@ function isOverdue(task: Task): boolean {
 }
 
 export default function BubbleCanvas({
-  tasks, allTasks, focusedId, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup,
+  tasks, allTasks, focusedId, canEdit = true, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup,
   onEmptyClick, onAddSub, onAiGenerate,
   onDeleteMultiple, onCompleteMultiple, onGroupMultiple, onDuplicateMultiple,
 }: Props) {
@@ -229,8 +230,8 @@ export default function BubbleCanvas({
         setSelectedBubbleIds([]);
         setMultiActionPos(null);
         dragRef.current = { bubbleId: hit.id, offsetX: x - hit.x, offsetY: y - hit.y, startX: hit.x, startY: hit.y };
-        canvas.style.cursor = "grabbing";
-      } else {
+        canvas.style.cursor = canEdit ? "grabbing" : "default";
+      } else if (canEdit) {
         // Start rect selection on empty canvas
         rectSelectRef.current = { sx: x, sy: y, ex: x, ey: y };
       }
@@ -253,14 +254,16 @@ export default function BubbleCanvas({
       }
 
       if (dragRef.current) {
-        const b = bubblesRef.current.find((b) => b.id === dragRef.current!.bubbleId);
-        if (b) {
-          b.x = x - dragRef.current.offsetX;
-          b.y = y - dragRef.current.offsetY;
-          b.vx = 0;
-          b.vy = 0;
+        if (canEdit) {
+          const b = bubblesRef.current.find((b) => b.id === dragRef.current!.bubbleId);
+          if (b) {
+            b.x = x - dragRef.current.offsetX;
+            b.y = y - dragRef.current.offsetY;
+            b.vx = 0;
+            b.vy = 0;
+          }
+          canvas.style.cursor = "grabbing";
         }
-        canvas.style.cursor = "grabbing";
         setTooltip(null);
         hoveredRef.current = null;
         return;
@@ -336,7 +339,7 @@ export default function BubbleCanvas({
       if (totalMoved < 8) {
         const now = Date.now();
         const lastClick = lastClickRef.current;
-        const isDoubleClick = lastClick && lastClick.id === b.id && now - lastClick.time < 400;
+        const isDoubleClick = canEdit && lastClick && lastClick.id === b.id && now - lastClick.time < 400;
         lastClickRef.current = { id: b.id, time: now };
 
         if (isDoubleClick) {
@@ -354,14 +357,18 @@ export default function BubbleCanvas({
 
         // Single click -> select + floating actions
         onSelect(b.id);
-        const rect = canvasRef.current!.getBoundingClientRect();
-        setFloatingActions({
-          id: b.id,
-          x: b.x / dpr + rect.left,
-          y: (b.y - b.r) / dpr + rect.top - 12,
-        });
+        if (canEdit) {
+          const rect = canvasRef.current!.getBoundingClientRect();
+          setFloatingActions({
+            id: b.id,
+            x: b.x / dpr + rect.left,
+            y: (b.y - b.r) / dpr + rect.top - 12,
+          });
+        }
         return;
       }
+
+      if (!canEdit) return;
 
       // Check snap to another bubble -> group
       for (const other of bubblesRef.current) {
@@ -409,6 +416,7 @@ export default function BubbleCanvas({
     };
 
     const handleDblClick = (e: MouseEvent) => {
+      if (!canEdit) return;
       const { x, y } = getPos(e);
       const hit = findBubble(x, y);
       if (!hit && onEmptyClick) {
@@ -456,7 +464,7 @@ export default function BubbleCanvas({
       e.preventDefault();
       const pos = getPos(e.touches[0]);
       mouseRef.current = pos;
-      if (dragRef.current) {
+      if (dragRef.current && canEdit) {
         const b = bubblesRef.current.find((b) => b.id === dragRef.current!.bubbleId);
         if (b) { b.x = pos.x - dragRef.current.offsetX; b.y = pos.y - dragRef.current.offsetY; b.vx = 0; b.vy = 0; }
       }
@@ -473,7 +481,7 @@ export default function BubbleCanvas({
       if (totalMoved < 12) {
         const now = Date.now();
         const lastClick = lastClickRef.current;
-        const isDoubleClick = lastClick && lastClick.id === b.id && now - lastClick.time < 500;
+        const isDoubleClick = canEdit && lastClick && lastClick.id === b.id && now - lastClick.time < 500;
         lastClickRef.current = { id: b.id, time: now };
         if (isDoubleClick) {
           lastClickRef.current = null;
@@ -489,9 +497,15 @@ export default function BubbleCanvas({
           return;
         }
         onSelect(b.id);
-        const rect2 = canvas.getBoundingClientRect();
-        setFloatingActions({ id: b.id, x: b.x / dpr + rect2.left, y: (b.y - b.r) / dpr + rect2.top - 12 });
+        if (canEdit) {
+          const rect2 = canvas.getBoundingClientRect();
+          setFloatingActions({ id: b.id, x: b.x / dpr + rect2.left, y: (b.y - b.r) / dpr + rect2.top - 12 });
+        }
       } else {
+        if (!canEdit) {
+          mouseRef.current = null;
+          return;
+        }
         // Check snap to group on touch drag
         for (const other of bubblesRef.current) {
           if (other.id === b.id || other.popping) continue;
@@ -531,7 +545,7 @@ export default function BubbleCanvas({
       canvas.removeEventListener("touchend", handleTouchEnd);
       if (hoverTimer) clearTimeout(hoverTimer);
     };
-  }, [focusedId, onSelect, onGroup, onUngroup, popBubble, onEmptyClick]);
+  }, [canEdit, focusedId, onSelect, onGroup, onUngroup, popBubble, onEmptyClick]);
 
   // Animation loop
   useEffect(() => {
@@ -902,7 +916,7 @@ export default function BubbleCanvas({
       />
 
       {/* Floating action icons on selected bubble */}
-      {floatingActions && focusedId && (
+      {canEdit && floatingActions && focusedId && (
         <div
           className="bubble-floating-actions"
           style={{ left: floatingActions.x, top: floatingActions.y }}

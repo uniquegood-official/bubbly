@@ -5,6 +5,7 @@ interface Props {
   tasks: Task[];
   onSelect: (id: string) => void;
   onReactivate: (id: string) => void;
+  compact?: boolean;
 }
 
 function highlightMatch(text: string, query: string) {
@@ -18,7 +19,7 @@ function highlightMatch(text: string, query: string) {
   );
 }
 
-export default function SearchBar({ tasks, onSelect, onReactivate }: Props) {
+export default function SearchBar({ tasks, onSelect, onReactivate, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -49,8 +50,22 @@ export default function SearchBar({ tasks, onSelect, onReactivate }: Props) {
 
   return (
     <div className="search-bar">
-      <button className="search-toggle" onClick={() => { setOpen(!open); setTimeout(() => inputRef.current?.focus(), 50); }}>
-        ⌘K 검색
+      <button
+        className={`search-toggle ${compact ? "compact" : ""}`}
+        onClick={() => {
+          setOpen(!open);
+          setTimeout(() => inputRef.current?.focus(), 50);
+        }}
+        title="검색"
+      >
+        {compact ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.35-4.35" />
+          </svg>
+        ) : (
+          "⌘K 검색"
+        )}
       </button>
 
       {open && (

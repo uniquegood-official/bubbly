@@ -18,10 +18,14 @@ function App() {
   const online = useWorkspace(auth.user?.id ?? null);
   const local = useStore();
   const useOnline = isSupabaseConfigured && !!auth.user;
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(max-width: 768px)").matches : false,
+  );
 
   const tasks = useOnline ? online.tasks : local.tasks;
   const addTask = useOnline ? online.addTask : local.addTask;
   const addSubTask = useOnline ? online.addSubTask : local.addSubTask;
+  const addSubTaskWithColor = useOnline ? online.addSubTaskWithColor : local.addSubTaskWithColor;
   const updateTask = useOnline ? online.updateTask : local.updateTask;
   const completeTask = useOnline ? online.completeTask : local.completeTask;
   const reactivateTask = useOnline ? online.reactivateTask : local.reactivateTask;
@@ -29,7 +33,9 @@ function App() {
   const completeGroup = useOnline ? online.completeGroup : local.completeGroup;
   const groupTasks = useOnline ? online.groupTasks : local.groupTasks;
   const ungroupTask = useOnline ? online.ungroupTask : local.ungroupTask;
-  const duplicateTasks = local.duplicateTasks;
+  const duplicateTasks = useOnline ? online.duplicateTasks : local.duplicateTasks;
+  const canEdit = !useOnline || online.canEdit;
+  const canShare = !useOnline || online.canShare;
 
   // Categories (local store only for now)
   const categories = local.categories;
@@ -60,7 +66,9 @@ function App() {
   })();
 
   const focusedTask = allActive.find((t) => t.id === focusedTaskId);
-  const [timelineOpen, setTimelineOpen] = useState(true);
+  const [timelineOpen, setTimelineOpen] = useState(() =>
+    typeof window !== "undefined" ? !window.matchMedia("(max-width: 768px)").matches : true,
+  );
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [selectedCompleted, setSelectedCompleted] = useState<string | null>(null);
   const lastCompletedClick = useRef<{ id: string; time: number } | null>(null);
@@ -74,6 +82,25 @@ function App() {
   const [editTitle, setEditTitle] = useState("");
   const [editMemo, setEditMemo] = useState("");
   const [editMinutes, setEditMinutes] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const mediaQuery = window.matchMedia("(max-width: 768px)");
+    const syncLayout = (matches: boolean) => {
+      setIsMobile(matches);
+      setTimelineOpen(!matches);
+    };
+
+    syncLayout(mediaQuery.matches);
+
+    const handleChange = (event: MediaQueryListEvent) => {
+      syncLayout(event.matches);
+    };
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
 
   useEffect(() => {
     if (focusedTask) {
@@ -104,16 +131,57 @@ function App() {
     return new Date(t.completedAt).toDateString() === new Date().toDateString();
   });
 
+  const handleLocalShare = useCallback(async () => {
+    const text = allActive.map((t) => {
+      let line = `- ${t.title}`;
+      if (t.estimatedMinutes) line += ` (${t.estimatedMinutes}분)`;
+      if (t.memo) line += `\n  ${t.memo}`;
+      return line;
+    }).join("\n") || "버블이 없습니다";
+
+    if (isMobile && typeof navigator.share === "function") {
+      try {
+        await navigator.share({
+          title: "Bubbly 버블 목록",
+          text,
+        });
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+        return;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const input = document.createElement("textarea");
+      input.value = text;
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand("copy");
+      document.body.removeChild(input);
+    }
+    setShareCopied(true);
+    setTimeout(() => setShareCopied(false), 2000);
+  }, [allActive, isMobile]);
+
   const handleSelect = useCallback(
-    (id: string) => { saveEdits(); setFocusedTaskId(id || null); },
-    [saveEdits]
+    (id: string) => {
+      saveEdits();
+      setFocusedTaskId(id || null);
+      if (isMobile && id) setTimelineOpen(false);
+    },
+    [isMobile, saveEdits]
   );
 
   const handleAdd = useCallback(
     (title: string, priority: Priority, dueDate?: string, estimatedMinutes?: number) => {
+      if (!canEdit) return;
       addTask(title, priority, dueDate, estimatedMinutes);
     },
-    [addTask]
+    [addTask, canEdit]
   );
 
   const handlePriorityChange = useCallback(
@@ -127,19 +195,22 @@ function App() {
   );
 
   const handleAddSubTask = useCallback((title: string, color: string) => {
-    if (!focusedTask) return;
-    local.addSubTaskWithColor(focusedTask.id, title, color);
+    if (!focusedTask || !canEdit) return;
+    addSubTaskWithColor(focusedTask.id, title, color);
     setSubDialogOpen(false);
-  }, [focusedTask, local]);
+  }, [addSubTaskWithColor, canEdit, focusedTask]);
 
   // Canvas floating action: open sub-dialog for a specific bubble
   const handleCanvasAddSub = useCallback((id: string) => {
+    if (!canEdit) return;
     setFocusedTaskId(id);
+    if (isMobile) setTimelineOpen(false);
     setSubDialogOpen(true);
-  }, []);
+  }, [canEdit, isMobile]);
 
   // Canvas floating action: AI generate for a specific bubble
   const handleCanvasAiGenerate = useCallback(async (id: string) => {
+    if (!canEdit) return;
     const task = allActive.find((t) => t.id === id);
     if (!task || aiLoading) return;
     setAiLoading(true);
@@ -161,10 +232,10 @@ function App() {
     } finally {
       setAiLoading(false);
     }
-  }, [allActive, aiLoading, addSubTask]);
+  }, [allActive, aiLoading, addSubTask, canEdit]);
 
   const handleAiGenerate = useCallback(async () => {
-    if (!focusedTask || aiLoading) return;
+    if (!focusedTask || aiLoading || !canEdit) return;
     setAiLoading(true);
     try {
       const res = await fetch("/api/generate-subtasks", {
@@ -184,7 +255,7 @@ function App() {
     } finally {
       setAiLoading(false);
     }
-  }, [focusedTask, aiLoading, addSubTask]);
+  }, [focusedTask, aiLoading, addSubTask, canEdit]);
 
   // Group tasks for focused bubble
   const focusedGroupTasks = focusedTask?.groupId
@@ -205,23 +276,27 @@ function App() {
 
   // Multi-select handlers for BubbleCanvas
   const handleDeleteMultiple = useCallback((ids: string[]) => {
+    if (!canEdit) return;
     ids.forEach((id) => removeTask(id));
-  }, [removeTask]);
+  }, [canEdit, removeTask]);
 
   const handleCompleteMultiple = useCallback((ids: string[]) => {
+    if (!canEdit) return;
     ids.forEach((id) => completeTask(id));
-  }, [completeTask]);
+  }, [canEdit, completeTask]);
 
   const handleGroupMultiple = useCallback((ids: string[]) => {
+    if (!canEdit) return;
     if (ids.length < 2) return;
     for (let i = 1; i < ids.length; i++) {
       groupTasks(ids[0], ids[i]);
     }
-  }, [groupTasks]);
+  }, [canEdit, groupTasks]);
 
   const handleDuplicateMultiple = useCallback((ids: string[]) => {
+    if (!canEdit) return;
     duplicateTasks(ids);
-  }, [duplicateTasks]);
+  }, [canEdit, duplicateTasks]);
 
   // Global shortcut: N to open spotlight, + to add sub or open spotlight
   useEffect(() => {
@@ -293,8 +368,6 @@ function App() {
     );
   }
 
-  const isOwner = !useOnline || focusedTask?.ownerId === auth.user?.id;
-
   return (
     <div className="app">
       {/* Top bar */}
@@ -314,27 +387,21 @@ function App() {
         </div>
 
         <div className="top-bar-right">
-          <button className="add-trigger" onClick={() => setSpotlightOpen(true)}>
-            + 새 버블 <kbd>N</kbd>
-          </button>
-          <SearchBar tasks={tasks} onSelect={handleSelect} onReactivate={reactivateTask} />
+          {!isMobile && (
+            <>
+              <button className="add-trigger" onClick={() => setSpotlightOpen(true)} disabled={!canEdit}>
+                + 새 버블 <kbd>N</kbd>
+              </button>
+              <SearchBar tasks={tasks} onSelect={handleSelect} onReactivate={reactivateTask} />
+            </>
+          )}
           {useOnline ? (
-            <ShareButton getShareLink={online.getShareLink} />
-          ) : (
+            !isMobile && canShare ? <ShareButton getShareLink={online.getShareLink} /> : null
+          ) : !isMobile ? (
             <button
               className="share-btn"
               title="태스크 내용 복사"
-              onClick={() => {
-                const text = allActive.map((t) => {
-                  let line = `- ${t.title}`;
-                  if (t.estimatedMinutes) line += ` (${t.estimatedMinutes}분)`;
-                  if (t.memo) line += `\n  ${t.memo}`;
-                  return line;
-                }).join("\n");
-                navigator.clipboard.writeText(text || "버블이 없습니다");
-                setShareCopied(true);
-                setTimeout(() => setShareCopied(false), 2000);
-              }}
+              onClick={() => void handleLocalShare()}
             >
               {shareCopied ? (
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -348,8 +415,8 @@ function App() {
                 </svg>
               )}
             </button>
-          )}
-          {!timelineOpen && (
+          ) : null}
+          {!timelineOpen && !isMobile && (
             <button
               className="timeline-toggle"
               onClick={() => setTimelineOpen(true)}
@@ -372,6 +439,7 @@ function App() {
 
       {/* Sidebar */}
       <div className={`timeline-sidebar ${timelineOpen ? "open" : ""}`}>
+        {isMobile && <div className="mobile-sheet-handle" />}
         <div className="sidebar-top">
           <div className="timeline-header">
             <h3>Bubbly</h3>
@@ -508,7 +576,7 @@ function App() {
                       </div>
                       {entry.tasks.map((task) => {
                         const isSelected = selectedCompleted === task.id;
-                        const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
+                        const isOwnTask = canEdit;
                         return (
                           <div key={task.id}>
                             <div
@@ -553,7 +621,7 @@ function App() {
                 }
                 const task = entry.task;
                 const isSelected = selectedCompleted === task.id;
-                const isOwnTask = !useOnline || task.ownerId === auth.user?.id;
+                const isOwnTask = canEdit;
                 return (
                   <div key={task.id}>
                     <div
@@ -604,6 +672,7 @@ function App() {
           tasks={active}
           allTasks={allActive}
           focusedId={focusedTaskId}
+          canEdit={canEdit}
           onSelect={handleSelect}
           onComplete={completeTask}
           onGroup={groupTasks}
@@ -622,10 +691,11 @@ function App() {
       {/* Edit Panel */}
       {focusedTask && (
         <div className="edit-panel">
+          {isMobile && <div className="mobile-sheet-handle" />}
           {/* Header with action icons */}
           <div className="edit-panel-header">
             <div className="edit-header-actions">
-              {isOwner && (
+              {canEdit && (
                 <>
                   <button
                     className="edit-icon-btn"
@@ -696,7 +766,7 @@ function App() {
               onKeyDown={(e) => e.key === "Enter" && saveEdits()}
               className="edit-title-input"
               placeholder="제목"
-              disabled={!isOwner}
+              disabled={!canEdit}
             />
           </div>
 
@@ -708,7 +778,7 @@ function App() {
                   key={p}
                   className={`ep-btn p${p} ${focusedTask.priority === p ? "active" : ""}`}
                   onClick={() => handlePriorityChange(p)}
-                  disabled={!isOwner}
+                  disabled={!canEdit}
                 >
                   {p}
                 </button>
@@ -734,7 +804,7 @@ function App() {
                   }}
                   title={c.label}
                   onClick={() => handleColorChange(c.id)}
-                  disabled={!isOwner}
+                  disabled={!canEdit}
                 />
               ))}
             </div>
@@ -747,7 +817,7 @@ function App() {
               <div className="edit-category-pills">
                 <button
                   className={`cat-pill ${!focusedTask.categoryId ? "active" : ""}`}
-                  onClick={() => isOwner && updateTask(focusedTask.id, { categoryId: undefined })}
+                  onClick={() => canEdit && updateTask(focusedTask.id, { categoryId: undefined })}
                 >
                   없음
                 </button>
@@ -755,7 +825,7 @@ function App() {
                   <button
                     key={cat.id}
                     className={`cat-pill ${focusedTask.categoryId === cat.id ? "active" : ""}`}
-                    onClick={() => isOwner && updateTask(focusedTask.id, { categoryId: cat.id })}
+                    onClick={() => canEdit && updateTask(focusedTask.id, { categoryId: cat.id })}
                   >
                     {cat.icon || "◆"} {cat.name}
                   </button>
@@ -775,7 +845,7 @@ function App() {
                 placeholder="—"
                 min={1}
                 className="edit-minutes"
-                disabled={!isOwner}
+                disabled={!canEdit}
               />
               <span>분</span>
             </div>
@@ -790,14 +860,14 @@ function App() {
               placeholder="메모를 남겨보세요..."
               className="edit-memo"
               rows={3}
-              disabled={!isOwner}
+              disabled={!canEdit}
             />
           </div>
 
           {focusedTask.groupId && (
             <div className="edit-group-info">
               <span className="edit-group-badge">그룹에 속해있음</span>
-              <button className="edit-ungroup" onClick={() => ungroupTask(focusedTask.id)}>
+              <button className="edit-ungroup" onClick={() => canEdit && ungroupTask(focusedTask.id)} disabled={!canEdit}>
                 분리하기
               </button>
             </div>
@@ -837,11 +907,69 @@ function App() {
             </div>
           )}
 
-          {!isOwner && (
-            <div className="edit-readonly-notice">다른 사람의 태스크는 수정할 수 없어요</div>
+          {!canEdit && (
+            <div className="edit-readonly-notice">읽기 전용 링크로 참여 중이라 수정할 수 없어요</div>
           )}
 
           <div className="edit-hint">더블클릭으로 바로 완료</div>
+        </div>
+      )}
+
+      {isMobile && (
+        <div className="mobile-dock">
+          <button
+            className={`mobile-dock-btn ${timelineOpen ? "active" : ""}`}
+            onClick={() => {
+              setSpotlightOpen(false);
+              setTimelineOpen((prev) => !prev);
+            }}
+            type="button"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="4" y1="6" x2="20" y2="6" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="18" x2="20" y2="18" />
+            </svg>
+            <span>목록</span>
+          </button>
+
+          <SearchBar tasks={tasks} onSelect={handleSelect} onReactivate={reactivateTask} compact />
+
+          <button
+            className="mobile-dock-btn primary"
+            onClick={() => {
+              if (!canEdit) return;
+              setTimelineOpen(false);
+              setSpotlightOpen(true);
+            }}
+            disabled={!canEdit}
+            type="button"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span>추가</span>
+          </button>
+
+          {useOnline ? (
+            canShare ? <ShareButton getShareLink={online.getShareLink} withLabel /> : null
+          ) : (
+            <button className="mobile-dock-btn" onClick={() => void handleLocalShare()} type="button">
+              {shareCopied ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                  <polyline points="16 6 12 2 8 6" />
+                  <line x1="12" y1="2" x2="12" y2="15" />
+                </svg>
+              )}
+              <span>공유</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -866,7 +994,7 @@ function App() {
       {active.length === 0 && completed.length === 0 && (
         <div className="empty-hint">
           <p>🫧</p>
-          <p>N키를 눌러 첫 번째 버블을 만들어보세요</p>
+          <p>{isMobile ? "하단 추가 버튼으로 첫 번째 버블을 만들어보세요" : "N키를 눌러 첫 번째 버블을 만들어보세요"}</p>
         </div>
       )}
     </div>
