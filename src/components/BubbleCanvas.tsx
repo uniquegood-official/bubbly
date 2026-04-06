@@ -48,6 +48,7 @@ interface Props {
   onEmptyClick?: (x: number, y: number) => void;
   onAddSub?: (id: string) => void;
   onAiGenerate?: (id: string) => void;
+  onDelete?: (id: string) => void;
   onDeleteMultiple?: (ids: string[]) => void;
   onCompleteMultiple?: (ids: string[]) => void;
   onGroupMultiple?: (ids: string[]) => void;
@@ -67,7 +68,7 @@ function isOverdue(task: Task): boolean {
 
 export default function BubbleCanvas({
   tasks, allTasks, focusedId, canEdit = true, onSelect, onComplete, onGroup, onUngroup, onCompleteGroup,
-  onEmptyClick, onAddSub, onAiGenerate,
+  onEmptyClick, onAddSub, onAiGenerate, onDelete,
   onDeleteMultiple, onCompleteMultiple, onGroupMultiple, onDuplicateMultiple,
 }: Props) {
   const { t } = useI18n();
@@ -388,15 +389,13 @@ export default function BubbleCanvas({
         }
 
         if (canEdit && recentClicks.length === 2) {
-          // Double click -> pop/complete with confirm
+          // Double click -> directly pop/complete
           clickHistoryRef.current = [];
-          const rect = canvasRef.current!.getBoundingClientRect();
-          const screenX = b.x / dpr + rect.left;
-          const screenY = b.y / dpr + rect.top;
+          setFloatingActions(null);
           if (b.task.groupId && groupCenters.current.has(b.id)) {
-            setConfirmGroup({ groupId: b.task.groupId!, x: screenX, y: screenY });
+            popGroup(b.task.groupId!);
           } else {
-            setConfirmPop({ id: b.id, x: screenX, y: screenY });
+            popBubble(b.id);
           }
           return;
         }
@@ -545,15 +544,13 @@ export default function BubbleCanvas({
         }
 
         if (canEdit && recentClicks.length === 2) {
-          // Double click -> pop/complete with confirm
+          // Double tap -> directly pop/complete
           clickHistoryRef.current = [];
-          const rect2 = canvas.getBoundingClientRect();
-          const screenX = b.x / dpr + rect2.left;
-          const screenY = b.y / dpr + rect2.top;
+          setFloatingActions(null);
           if (b.task.groupId && groupCenters.current.has(b.id)) {
-            setConfirmGroup({ groupId: b.task.groupId!, x: screenX, y: screenY });
+            popGroup(b.task.groupId!);
           } else {
-            setConfirmPop({ id: b.id, x: screenX, y: screenY });
+            popBubble(b.id);
           }
           mouseRef.current = null;
           return;
@@ -608,7 +605,7 @@ export default function BubbleCanvas({
       canvas.removeEventListener("touchend", handleTouchEnd);
       if (hoverTimer) clearTimeout(hoverTimer);
     };
-  }, [canEdit, focusedId, onSelect, onGroup, onUngroup, popBubble, onEmptyClick]);
+  }, [canEdit, focusedId, onSelect, onGroup, onUngroup, popBubble, popGroup, onEmptyClick]);
 
   // Animation loop
   useEffect(() => {
@@ -644,7 +641,7 @@ export default function BubbleCanvas({
         }
       }
 
-      // Physics — zero gravity, floating in place
+      // Physics — zero gravity, spatial distribution, no clumping
       for (const b of bubbles) {
         if (b.popping) {
           b.popProgress += 0.04;
@@ -653,7 +650,6 @@ export default function BubbleCanvas({
 
         const beingDragged = isDragging && dragRef.current!.bubbleId === b.id;
         if (beingDragged) {
-          // While dragging, attract nearby bubbles proportional to dragged bubble mass
           const dragForce = (b.r / 50) * 0.06;
           for (const other of bubbles) {
             if (other.id === b.id || other.popping) continue;
@@ -680,6 +676,7 @@ export default function BubbleCanvas({
           }
         }
 
+        // Group spring — pull group members together (gentle)
         if (inGroup) {
           const group = groups[b.task.groupId!];
           const cx = group.reduce((s, ob) => s + ob.x, 0) / group.length;
@@ -689,12 +686,13 @@ export default function BubbleCanvas({
           const dist = Math.sqrt(dx * dx + dy * dy);
           const targetDist = b.r + 10;
           if (dist > targetDist) {
-            const spring = 0.008;
+            const spring = 0.006;
             b.vx += (dx / dist) * (dist - targetDist) * spring;
             b.vy += (dy / dist) * (dist - targetDist) * spring;
           }
         }
 
+        // Collision / repulsion — STRONG to prevent clumping
         for (const other of bubbles) {
           if (other.id === b.id || other.popping) continue;
           const isDraggedOther = isDragging && dragRef.current!.bubbleId === other.id;
@@ -705,50 +703,76 @@ export default function BubbleCanvas({
           const dist = Math.sqrt(dx * dx + dy * dy);
 
           const sameGroup = b.task.groupId && b.task.groupId === other.task.groupId;
-          const minDist = sameGroup ? b.r + other.r - 8 : b.r + other.r + 4;
+          const minDist = sameGroup ? b.r + other.r - 6 : b.r + other.r + 12;
 
           if (dist < minDist && dist > 0) {
             const nx = dx / dist;
             const ny = dy / dist;
             const overlap = minDist - dist;
-            const pushForce = sameGroup ? 0.3 : 0.5;
+            // Hard push — immediately separate overlapping bubbles
+            const pushForce = sameGroup ? 0.4 : 0.55;
             b.x += nx * overlap * pushForce;
             b.y += ny * overlap * pushForce;
             other.x -= nx * overlap * pushForce;
             other.y -= ny * overlap * pushForce;
-            const bounce = sameGroup ? 0.02 : 0.08;
+            const bounce = sameGroup ? 0.03 : 0.12;
             b.vx += nx * bounce;
             b.vy += ny * bounce;
             other.vx -= nx * bounce;
             other.vy -= ny * bounce;
           }
+
+          // Soft repulsion zone — push apart even when not overlapping
+          // This prevents clumping by creating "personal space"
+          const softDist = sameGroup ? minDist * 1.1 : minDist * 2.0;
+          if (!sameGroup && dist < softDist && dist > minDist) {
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const strength = 0.003 * (1 - (dist - minDist) / (softDist - minDist));
+            b.vx += nx * strength;
+            b.vy += ny * strength;
+            other.vx -= nx * strength;
+            other.vy -= ny * strength;
+          }
         }
 
-        // Gentle center pull — prevent groups drifting to edges
+        // Wall bounce — keep bubbles inside canvas with margin
+        const pad = 8;
+        if (b.x - b.r < pad) { b.x = b.r + pad; b.vx = Math.abs(b.vx) * 0.4; }
+        if (b.x + b.r > W - pad) { b.x = W - b.r - pad; b.vx = -Math.abs(b.vx) * 0.4; }
+        if (b.y - b.r < pad) { b.y = b.r + pad; b.vy = Math.abs(b.vy) * 0.4; }
+        if (b.y + b.r > H - pad) { b.y = H - b.r - pad; b.vy = -Math.abs(b.vy) * 0.4; }
+
+        // Very gentle center pull — ONLY when near edges (>45% from center)
+        // Much weaker than before to prevent clumping
         const cxCanvas = W / 2;
         const cyCanvas = H / 2;
         const distFromCenter = Math.sqrt((b.x - cxCanvas) ** 2 + (b.y - cyCanvas) ** 2);
-        const maxDist = Math.min(W, H) * 0.35;
+        const maxDist = Math.min(W, H) * 0.45;
         if (distFromCenter > maxDist) {
-          const pull = 0.002 * ((distFromCenter - maxDist) / maxDist);
+          const pull = 0.0008 * ((distFromCenter - maxDist) / maxDist);
           b.vx += (cxCanvas - b.x) / distFromCenter * pull;
           b.vy += (cyCanvas - b.y) / distFromCenter * pull;
         }
 
-        // Wall bounce — keep bubbles inside canvas
-        const pad = 4;
-        if (b.x - b.r < pad) { b.x = b.r + pad; b.vx = Math.abs(b.vx) * 0.3; }
-        if (b.x + b.r > W - pad) { b.x = W - b.r - pad; b.vx = -Math.abs(b.vx) * 0.3; }
-        if (b.y - b.r < pad) { b.y = b.r + pad; b.vy = Math.abs(b.vy) * 0.3; }
-        if (b.y + b.r > H - pad) { b.y = H - b.r - pad; b.vy = -Math.abs(b.vy) * 0.3; }
-
-        // Gentle drift (no gravity — bubbles float in place)
-        if (!inGroup) {
-          b.vx += (Math.random() - 0.5) * 0.02;
-          b.vy += (Math.random() - 0.5) * 0.02;
+        // Buoyancy for group centers — prevent heavy groups from sinking
+        const isBubbleGroupCenter = b.task.groupId && groups[b.task.groupId] && groups[b.task.groupId].length > 1 &&
+          groups[b.task.groupId].reduce((a, c) => (c.r >= a.r ? c : a)).id === b.id;
+        if (isBubbleGroupCenter) {
+          const verticalOffset = b.y - cyCanvas;
+          if (verticalOffset > 0) {
+            // Pull upward when below center
+            b.vy -= 0.012 * (verticalOffset / H);
+          }
+          // General gentle vertical centering for groups
+          b.vy += (cyCanvas - b.y) * 0.0004;
         }
 
-        const damp = inGroup ? 0.9 : 0.985;
+        // Gentle random drift
+        b.vx += (Math.random() - 0.5) * 0.015;
+        b.vy += (Math.random() - 0.5) * 0.015;
+
+        const damp = inGroup ? 0.92 : 0.985;
         b.vx *= damp;
         b.vy *= damp;
 
@@ -1078,6 +1102,18 @@ export default function BubbleCanvas({
                 <text x="9" y="15.5" textAnchor="middle" fill="currentColor" fontSize="8" fontWeight="bold" fontFamily="system-ui">AI</text>
                 <path d="M18 2l.6 1.4L20 4l-1.4.6L18 6l-.6-1.4L16 4l1.4-.6L18 2z" fill="currentColor"/>
                 <path d="M22 7l.4.9.9.4-.9.4-.4.9-.4-.9-.9-.4.9-.4.4-.9z" fill="currentColor" opacity="0.5"/>
+              </svg>
+            </button>
+          )}
+          {onDelete && (
+            <button
+              className="bfa-btn danger"
+              title={t("edit.delete")}
+              onClick={() => { onDelete(floatingActions.id); setFloatingActions(null); }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
               </svg>
             </button>
           )}

@@ -348,6 +348,19 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [focusedTaskId, local]);
 
+  // Timer auto-pop: check every second if any task's timerEnd has passed
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      for (const task of tasks) {
+        if (task.timerEnd && !task.completed && task.timerEnd <= now) {
+          completeTask(task.id);
+        }
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [tasks, completeTask]);
+
   // Group completed tasks: grouped tasks together, solo tasks standalone
   // Sort groups by latest completedAt within group
   const completedGroups = (() => {
@@ -413,20 +426,18 @@ function App() {
       <div className="top-bar">
         <div className="top-bar-left">
           <span className="logo">Bubbly</span>
-          {!useOnline && (
-            <div className="undo-redo">
-              <button className="ur-btn" onClick={local.undo} disabled={!local.canUndo()} title={t("undo.undo")}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-                </svg>
-              </button>
-              <button className="ur-btn" onClick={local.redo} disabled={!local.canRedo()} title={t("undo.redo")}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10" />
-                </svg>
-              </button>
-            </div>
-          )}
+          <div className="undo-redo">
+            <button className="ur-btn" onClick={local.undo} disabled={!local.canUndo()} title={t("undo.undo")}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </svg>
+            </button>
+            <button className="ur-btn" onClick={local.redo} disabled={!local.canRedo()} title={t("undo.redo")}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10" />
+              </svg>
+            </button>
+          </div>
           <div className="stats">
             <div className="stat">
               <span className="stat-dot active" />
@@ -801,6 +812,7 @@ function App() {
           onEmptyClick={() => setSpotlightOpen(true)}
           onAddSub={handleCanvasAddSub}
           onAiGenerate={handleCanvasAiGenerate}
+          onDelete={(id) => { removeTask(id); setFocusedTaskId(null); }}
           onDeleteMultiple={handleDeleteMultiple}
           onCompleteMultiple={handleCompleteMultiple}
           onGroupMultiple={handleGroupMultiple}
@@ -855,7 +867,8 @@ function App() {
                   <button
                     className="edit-icon-btn danger"
                     title={t("edit.delete")}
-                    onClick={() => { removeTask(focusedTask.id); setFocusedTaskId(null); }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { const id = focusedTask.id; removeTask(id); setFocusedTaskId(null); }}
                   >
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="3 6 5 6 21 6" />
@@ -959,6 +972,39 @@ function App() {
 
           <div className="edit-field">
             <label>{t("edit.time")}</label>
+            <div className="edit-due-presets">
+              {[
+                { label: t("edit.dueToday"), getValue: () => { const d = new Date(); d.setHours(23, 59, 59); return d.toISOString(); } },
+                { label: t("edit.dueTomorrow"), getValue: () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(23, 59, 59); return d.toISOString(); } },
+                { label: t("edit.dueNextWeek"), getValue: () => { const d = new Date(); d.setDate(d.getDate() + 7); d.setHours(23, 59, 59); return d.toISOString(); } },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  className={`due-preset-btn ${focusedTask.dueDate && new Date(focusedTask.dueDate).toDateString() === new Date(p.getValue()).toDateString() ? "active" : ""}`}
+                  disabled={!canEdit}
+                  onClick={() => {
+                    if (!focusedTask) return;
+                    updateTask(focusedTask.id, { dueDate: p.getValue() });
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+              <input
+                type="date"
+                className="due-date-input"
+                value={focusedTask.dueDate ? new Date(focusedTask.dueDate).toISOString().slice(0, 10) : ""}
+                onChange={(e) => {
+                  if (!focusedTask || !canEdit) return;
+                  const val = e.target.value;
+                  updateTask(focusedTask.id, { dueDate: val ? new Date(val + "T23:59:59").toISOString() : undefined });
+                }}
+                disabled={!canEdit}
+              />
+              {focusedTask.dueDate && canEdit && (
+                <button className="due-clear-btn" onClick={() => updateTask(focusedTask.id, { dueDate: undefined })}>✕</button>
+              )}
+            </div>
             <div className="edit-time-row">
               <input
                 type="number"
