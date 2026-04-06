@@ -51,7 +51,7 @@ export function useAuth() {
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: window.location.origin,
+        redirectTo: `${window.location.origin}/app`,
         queryParams: { prompt: "consent" },
       },
     });
@@ -61,7 +61,7 @@ export function useAuth() {
     if (!supabase) return;
     await supabase.auth.signInWithOAuth({
       provider: "github",
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo: `${window.location.origin}/app` },
     });
   }
 

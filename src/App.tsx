@@ -11,10 +11,12 @@ import ShareButton from "./components/ShareButton";
 import type { Priority } from "./types/task";
 import { BUBBLE_COLORS } from "./types/task";
 import { useI18n, LOCALES } from "./lib/i18n";
+import { useNavigate } from "react-router-dom";
 import "./App.css";
 
 function App() {
   const { t, locale, setLocale } = useI18n();
+  const navigate = useNavigate();
   const auth = useAuth();
   const online = useWorkspace(auth.user?.id ?? null);
   const local = useStore();
@@ -500,7 +502,7 @@ function App() {
                         ))}
                       </div>
                     </div>
-                    <button className="settings-logout" onClick={() => { auth.signOut(); setSettingsOpen(false); }}>
+                    <button className="settings-logout" onClick={() => { auth.signOut(); setSettingsOpen(false); navigate("/"); }}>
                       {t("topbar.logout")}
                     </button>
                   </div>
